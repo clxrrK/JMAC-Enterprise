@@ -9,6 +9,7 @@ import {
   paymentMethodLabel,
   paymentShares,
   peso,
+  LOW_STOCK_ALERT_LEVEL,
   stockAlerts,
   type DashboardSummary,
 } from '@/lib/posDashboard'
@@ -193,30 +194,121 @@ describe('how the day was paid', () => {
 })
 
 describe('what needs attention', () => {
-  const withStock = (out: number, low: number) => ({ ...emptySummary(), out_of_stock_count: out, low_stock_count: low })
-
-  // Out of stock first: a product offered and unavailable is costing sales
-  // now, where a low one is a warning about later.
-  it('puts the shortage that is already costing sales first', () => {
-    expect(stockAlerts(withStock(2, 5)).map((a) => a.kind)).toEqual(['out', 'low'])
+  /**
+   * The bug these replace: the card read the dashboard summary's two counts,
+   * and the low one was computed as
+   *
+   *     quantity_on_hand > 0 AND quantity_on_hand <= low_stock_threshold
+   *
+   * with `low_stock_threshold integer not null default 0`. For any product
+   * nobody had configured, that is `q > 0 AND q <= 0` -- unsatisfiable. Cavite
+   * could hold five of something and raise no alert, for ever.
+   *
+   * Rows now come from get_branch_inventory, the same per-branch stock the
+   * Products and Inventory pages read, and the condition is a flat `<= 5`.
+   */
+  const item = (
+    name: string,
+    quantity: number | null,
+    over: { product_status?: string | null; is_available?: boolean } = {}
+  ) => ({
+    product_id: `p-${name}`,
+    product_name: name,
+    quantity_on_hand: quantity,
+    ...over,
   })
 
-  it('mentions only what is actually wrong', () => {
-    expect(stockAlerts(withStock(0, 5)).map((a) => a.kind)).toEqual(['low'])
-    expect(stockAlerts(withStock(3, 0)).map((a) => a.kind)).toEqual(['out'])
+  it('includes 0, 1 and 5, and excludes 6', () => {
+    const alerts = stockAlerts([
+      item('Six', 6),
+      item('Five', 5),
+      item('One', 1),
+      item('Zero', 0),
+    ])
+    expect(alerts.map((a) => a.name)).toEqual(['Zero', 'One', 'Five'])
+    expect(alerts.map((a) => a.quantity)).toEqual([0, 1, 5])
   })
 
-  // A dashboard that reports two zeroes every day teaches a manager to ignore
-  // the panel, which is the opposite of what it is for.
-  it('says nothing at all when nothing is wrong', () => {
-    expect(stockAlerts(withStock(0, 0))).toEqual([])
+  it('reads the threshold as five inclusive, not as a truthiness check', () => {
+    // The two ends that a `> 0` guard or a falsy test would silently drop.
+    expect(stockAlerts([item('Zero', 0)]).map((a) => a.kind)).toEqual(['out'])
+    expect(stockAlerts([item('Boundary', LOW_STOCK_ALERT_LEVEL)])).toHaveLength(1)
+    expect(stockAlerts([item('Over', LOW_STOCK_ALERT_LEVEL + 1)])).toEqual([])
   })
 
-  it('carries the count through untouched', () => {
-    expect(stockAlerts(withStock(4, 0))[0].count).toBe(4)
+  it('reproduces the reported Cavite shelf exactly', () => {
+    const alerts = stockAlerts([
+      item('Coca-Cola 5.6', 5),
+      item('Sting 250ml', 0),
+      item('ZZ PayMongo Verification', 19),
+    ])
+    expect(alerts.map((a) => [a.name, a.quantity, a.kind])).toEqual([
+      ['Sting 250ml', 0, 'out'],
+      ['Coca-Cola 5.6', 5, 'low'],
+    ])
   })
 
-  it('has nothing to say before the figures arrive', () => {
+  it('still flags a product the manager stopped on the till', () => {
+    // The other half of the bug: the summary filtered on bp.is_available, so
+    // pausing a line hid its empty shelf. Whether a till is offering something
+    // says nothing about whether there is any of it.
+    const alerts = stockAlerts([item('Stopped', 0, { is_available: false })])
+    expect(alerts.map((a) => [a.name, a.kind])).toEqual([['Stopped', 'out']])
+  })
+
+  it('leaves out a product that is retired or not yet launched', () => {
+    // The filter that looks like the one above and is not. Archiving is only a
+    // status change -- the branch rows survive at whatever they held -- and the
+    // till will never offer it again, so "0 remaining" is not a shortage anyone
+    // can act on. Stopped is a pause; archived is an ending.
+    const alerts = stockAlerts([
+      item('Retired', 0, { product_status: 'archived' }),
+      item('Unlaunched', 0, { product_status: 'draft' }),
+      item('Live', 0, { product_status: 'active' }),
+    ])
+    expect(alerts.map((a) => a.name)).toEqual(['Live'])
+  })
+
+  it('keeps a row whose status it cannot read', () => {
+    // The card's failure mode is hiding a real empty shelf. An unknown value
+    // must never be the reason something disappears from it.
+    expect(stockAlerts([item('No status given', 0)]).map((a) => a.name)).toEqual([
+      'No status given',
+    ])
+    expect(stockAlerts([item('Null status', 0, { product_status: null })])).toHaveLength(1)
+  })
+
+  it('does not let a status filter hide a stopped product', () => {
+    // Both filters at once, which is where a careless `&&` would go wrong: an
+    // active product, paused on the till, with nothing on the shelf. This is
+    // the exact row the original bug hid, and it must survive both tests.
+    const alerts = stockAlerts([
+      item('Paused but empty', 0, { is_available: false, product_status: 'active' }),
+    ])
+    expect(alerts.map((a) => [a.name, a.kind])).toEqual([['Paused but empty', 'out']])
+  })
+
+  it('puts the empty shelves first, then the lowest quantities', () => {
+    const alerts = stockAlerts([item('Four', 4), item('Empty', 0), item('Two', 2)])
+    expect(alerts.map((a) => a.quantity)).toEqual([0, 2, 4])
+  })
+
+  it('breaks ties by name so the order does not wander', () => {
+    const alerts = stockAlerts([item('Beta', 0), item('Alpha', 0)])
+    expect(alerts.map((a) => a.name)).toEqual(['Alpha', 'Beta'])
+  })
+
+  it('treats a missing quantity as nothing on the shelf', () => {
+    expect(stockAlerts([item('Unknown', null)]).map((a) => a.kind)).toEqual(['out'])
+  })
+
+  it('says nothing at all when every shelf is stocked', () => {
+    expect(stockAlerts([item('Plenty', 40), item('Loads', 6)])).toEqual([])
+  })
+
+  it('has nothing to say before the stock arrives', () => {
+    // Distinct from "everything is in stock" -- the card decides that, and only
+    // after a successful query.
     expect(stockAlerts(undefined)).toEqual([])
   })
 })

@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { Branch } from '@/hooks/useBranches'
 import type { DashboardSummary, PaymentTotal, TopProduct } from '@/lib/posDashboard'
+import type { InventoryRow } from '@/lib/posInventory'
 import type { PosAssignment } from '@/lib/portals'
 import type { TransactionRow } from '@/lib/posTransactions'
 
@@ -23,16 +24,52 @@ const branches: Branch[] = [
   { id: MAIN, name: 'Main Office', address: null, phone: null, latitude: null, longitude: null, is_active: true, show_on_landing: false, image_path: null, display_order: 0, created_at: '', updated_at: '' },
 ]
 
+/** The branch stock the RPC would return, keyed by branch, so a test can prove
+ * the card shows the selected branch's shelf and not somebody else's. */
+const shelves: Record<string, InventoryRow[]> = {}
+
 const state: {
   assignments: PosAssignment[]
   summary: DashboardSummary | undefined
   payments: PaymentTotal[]
   top: TopProduct[]
   recent: TransactionRow[]
-} = { assignments: [], summary: undefined, payments: [], top: [], recent: [] }
+  /** What the stock query is doing. Only an answered query -- one holding rows
+   * -- permits the card to make a claim about the shelf. 'stale' is the state
+   * React Query reports when a background refetch fails over data already in
+   * hand: an error, with the last good rows still there. */
+  stock: 'success' | 'loading' | 'error' | 'stale'
+  /** Branches still arriving, so no branch is resolved yet and the stock query
+   * has not been allowed to run. */
+  branchesLoading: boolean
+} = {
+  assignments: [],
+  summary: undefined,
+  payments: [],
+  top: [],
+  recent: [],
+  stock: 'success',
+  branchesLoading: false,
+}
 
 /** Every branch id the page asked any query about. */
 const asked: string[] = []
+
+function stockRow(name: string, quantity: number, over: Partial<InventoryRow> = {}): InventoryRow {
+  return {
+    product_id: `p-${name}`,
+    product_name: name,
+    category_name: 'Drinks',
+    quantity_on_hand: quantity,
+    // Left at the schema default on purpose: this is the column whose
+    // `not null default 0` made the old low-stock condition unsatisfiable.
+    low_stock_threshold: 0,
+    is_low_stock: false,
+    is_available: true,
+    product_status: 'active',
+    ...over,
+  }
+}
 
 function summary(overrides: Partial<DashboardSummary> = {}): DashboardSummary {
   return {
@@ -61,7 +98,10 @@ vi.mock('@/contexts/AuthContext', () => ({
 }))
 
 vi.mock('@/hooks/useBranches', () => ({
-  useBranches: () => ({ data: branches, isLoading: false }),
+  useBranches: () =>
+    state.branchesLoading
+      ? { data: undefined, isLoading: true }
+      : { data: branches, isLoading: false },
 }))
 
 vi.mock('@/hooks/usePosDashboard', () => ({
@@ -90,6 +130,39 @@ vi.mock('@/hooks/usePosDashboard', () => ({
   },
 }))
 
+/**
+ * The same hook the Products and Inventory pages use, mocked at its own
+ * boundary. Scoped by argument exactly as `get_branch_inventory` is: ask about
+ * Cavite and you get Cavite's shelf, and a branch with no entry here returns
+ * nothing rather than falling back to some other branch's stock.
+ *
+ * `enabled: !!branchId` is reproduced too, because that disabled state is the
+ * one the card must not read as good news: not loading, not failed, no data.
+ */
+vi.mock('@/hooks/usePosInventory', () => ({
+  useBranchInventory: (branchId?: string) => {
+    if (branchId) asked.push(branchId)
+    if (!branchId) return { data: undefined, isSuccess: false, isError: false, isLoading: false }
+    if (state.stock === 'loading') {
+      return { data: undefined, isSuccess: false, isError: false, isLoading: true }
+    }
+    if (state.stock === 'error') {
+      return { data: undefined, isSuccess: false, isError: true, isLoading: false }
+    }
+    if (state.stock === 'stale') {
+      // React Query keeps `data` when a refetch fails, and reports the error
+      // alongside it rather than instead of it.
+      return { data: shelves[branchId] ?? [], isSuccess: false, isError: true, isLoading: false }
+    }
+    return {
+      data: shelves[branchId] ?? [],
+      isSuccess: true,
+      isError: false,
+      isLoading: false,
+    }
+  },
+}))
+
 const { default: PosDashboardPage } = await import('@/pages/pos/PosDashboardPage')
 
 function show(url = '/pos/dashboard') {
@@ -107,6 +180,9 @@ afterEach(() => {
   state.payments = []
   state.top = []
   state.recent = []
+  state.stock = 'success'
+  state.branchesLoading = false
+  for (const key of Object.keys(shelves)) delete shelves[key]
   asked.length = 0
 })
 
@@ -215,43 +291,6 @@ describe('what a manager sees', () => {
     expect(screen.getByText('No sales have been rung up yet today.')).toBeTruthy()
   })
 
-  /**
-   * What is running out, as work rather than as a number.
-   *
-   * Two half-width cards each held a single count and offered no way to act on
-   * it. A manager reading "3 out of stock" wants to go to Inventory.
-   */
-  it('turns a stock shortage into somewhere to go', () => {
-    state.assignments = [{ branchId: CAVITE, role: 'manager' }]
-    state.summary = summary({ out_of_stock_count: 3, low_stock_count: 2 })
-    show()
-
-    const out = screen.getByText('Out of stock').closest('a')!
-    expect(out.getAttribute('href')).toBe('/pos/stock')
-    expect(out.textContent).toContain('3')
-
-    const low = screen.getByText('Low stock').closest('a')!
-    expect(low.getAttribute('href')).toBe('/pos/stock')
-    expect(low.textContent).toContain('2')
-  })
-
-  it('mentions only the shortage that exists', () => {
-    state.assignments = [{ branchId: CAVITE, role: 'manager' }]
-    state.summary = summary({ out_of_stock_count: 0, low_stock_count: 4 })
-    show()
-    expect(screen.getByText('Low stock')).toBeTruthy()
-    expect(screen.queryByText('Out of stock')).toBeNull()
-  })
-
-  it('says nothing is wrong rather than showing two zeroes', () => {
-    state.assignments = [{ branchId: CAVITE, role: 'manager' }]
-    state.summary = summary({ out_of_stock_count: 0, low_stock_count: 0 })
-    show()
-    expect(screen.getByText('Everything on the shelf is in stock.')).toBeTruthy()
-    expect(screen.queryByText('Out of stock')).toBeNull()
-    expect(screen.queryByText('Low stock')).toBeNull()
-  })
-
   it('draws each payment method as a share of the day', () => {
     state.assignments = [{ branchId: CAVITE, role: 'manager' }]
     state.summary = summary()
@@ -326,6 +365,227 @@ describe('what a manager sees', () => {
     expect(container.textContent).not.toMatch(
       /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
     )
+  })
+})
+
+/**
+ * What needs attention.
+ *
+ * The reported bug: Cavite held five Coca-Cola and zero Sting and the card
+ * said "Everything on the shelf is in stock." The card was reading the
+ * dashboard summary's two counts, whose low-stock condition was
+ *
+ *     quantity_on_hand > 0 AND quantity_on_hand <= low_stock_threshold
+ *
+ * against a column declared `not null default 0`. For a product nobody had
+ * configured that is `q > 0 AND q <= 0`, which no row can satisfy. The same
+ * lateral also filtered on `bp.is_available`, so stopping a line on the till
+ * hid its empty shelf.
+ *
+ * The card now reads `get_branch_inventory` -- the stock the Products and
+ * Inventory pages read -- and flags everything at or under five.
+ */
+describe('what needs attention', () => {
+  const manageCavite = () => {
+    state.assignments = [{ branchId: CAVITE, role: 'manager' }]
+    state.summary = summary()
+  }
+
+  it('shows the reported Cavite shelf as products rather than as counts', () => {
+    manageCavite()
+    shelves[CAVITE] = [
+      stockRow('Coca-Cola 5.6', 5),
+      stockRow('Sting 250ml', 0),
+      stockRow('ZZ PayMongo Verification', 19),
+    ]
+    show()
+
+    expect(screen.getByText('Coca-Cola 5.6')).toBeTruthy()
+    expect(screen.getByText('Low stock — 5 remaining')).toBeTruthy()
+    expect(screen.getByText('Sting 250ml')).toBeTruthy()
+    expect(screen.getByText('Out of stock')).toBeTruthy()
+    // Nineteen is not a shortage, and the card must not pad itself with one.
+    expect(screen.queryByText('ZZ PayMongo Verification')).toBeNull()
+    expect(screen.queryByText('Everything on the shelf is in stock.')).toBeNull()
+  })
+
+  it('flags nothing above five and everything at or below it', () => {
+    manageCavite()
+    shelves[CAVITE] = [
+      stockRow('Six', 6),
+      stockRow('Five', 5),
+      stockRow('One', 1),
+      stockRow('Zero', 0),
+    ]
+    show()
+
+    expect(screen.getByText('Zero')).toBeTruthy()
+    expect(screen.getByText('One')).toBeTruthy()
+    expect(screen.getByText('Five')).toBeTruthy()
+    expect(screen.queryByText('Six')).toBeNull()
+  })
+
+  it('puts the empty shelves first', () => {
+    manageCavite()
+    shelves[CAVITE] = [stockRow('Four', 4), stockRow('Empty', 0), stockRow('Two', 2)]
+    const { container } = show()
+    const text = container.textContent ?? ''
+
+    expect(text.indexOf('Empty')).toBeLessThan(text.indexOf('Two'))
+    expect(text.indexOf('Two')).toBeLessThan(text.indexOf('Four'))
+  })
+
+  it('still flags a product the manager stopped on the till', () => {
+    // Whether the till is offering something says nothing about whether there
+    // is any of it. The old query filtered these out entirely.
+    manageCavite()
+    shelves[CAVITE] = [stockRow('Paused Line', 0, { is_available: false })]
+    show()
+
+    expect(screen.getByText('Paused Line')).toBeTruthy()
+    expect(screen.getByText('Out of stock')).toBeTruthy()
+  })
+
+  it('does not nag about a product that has been retired', () => {
+    // Archiving leaves the branch rows behind at whatever they held, and the
+    // till will never offer the product again. A permanent "Out of stock" for
+    // something nobody can restock is noise in a card that exists to be acted
+    // on -- and it would crowd out the shortages that can be.
+    manageCavite()
+    shelves[CAVITE] = [
+      stockRow('Retired Line', 0, { product_status: 'archived' }),
+      stockRow('Sting 250ml', 0),
+    ]
+    show()
+
+    expect(screen.getByText('Sting 250ml')).toBeTruthy()
+    expect(screen.queryByText('Retired Line')).toBeNull()
+    expect(screen.getByText('1 product')).toBeTruthy()
+  })
+
+  it('sends the manager to that branch"s stock page', () => {
+    manageCavite()
+    shelves[CAVITE] = [stockRow('Sting 250ml', 0)]
+    show()
+
+    const row = screen.getByText('Sting 250ml').closest('a')!
+    expect(row.getAttribute('href')).toBe(`/pos/stock?branch=${CAVITE}`)
+  })
+
+  it('does not leak another branch"s stock into the card', () => {
+    state.assignments = [
+      { branchId: CAVITE, role: 'manager' },
+      { branchId: MAIN, role: 'manager' },
+    ]
+    state.summary = summary()
+    shelves[CAVITE] = [stockRow('Cavite Cola', 0)]
+    shelves[MAIN] = [stockRow('Main Office Water', 0)]
+    show(`/pos/dashboard?branch=${MAIN}`)
+
+    expect(screen.getByText('Main Office Water')).toBeTruthy()
+    expect(screen.queryByText('Cavite Cola')).toBeNull()
+  })
+
+  it('follows a stock change rather than holding the first answer', () => {
+    // The card renders whatever the shared pos-branch-inventory query holds, so
+    // a sale, a receipt or an adjustment invalidating that key moves the card.
+    manageCavite()
+    shelves[CAVITE] = [stockRow('Coca-Cola 5.6', 5)]
+    show()
+    expect(screen.getByText('Low stock — 5 remaining')).toBeTruthy()
+
+    cleanup()
+    shelves[CAVITE] = [stockRow('Coca-Cola 5.6', 0)]
+    show()
+    expect(screen.getByText('Out of stock')).toBeTruthy()
+    expect(screen.queryByText('Low stock — 5 remaining')).toBeNull()
+  })
+
+  it('lists every qualifying product rather than a top few', () => {
+    // A cap here would be a silent omission of exactly what the card exists to
+    // report -- the twelfth product is as out of stock as the first.
+    manageCavite()
+    shelves[CAVITE] = Array.from({ length: 12 }, (_, i) => stockRow(`Short ${i}`, i % 6))
+    show()
+
+    for (let i = 0; i < 12; i += 1) {
+      expect(screen.getByText(`Short ${i}`), `product ${i}`).toBeTruthy()
+    }
+    expect(screen.getByText('12 products')).toBeTruthy()
+  })
+
+  it('says the shelf is stocked only when the query said so', () => {
+    manageCavite()
+    shelves[CAVITE] = [stockRow('Plenty', 40)]
+    show()
+    expect(screen.getByText('Everything on the shelf is in stock.')).toBeTruthy()
+  })
+
+  it('never calls an unfinished request good news', () => {
+    manageCavite()
+    // Rows the server would eventually return, so "nothing rendered" cannot be
+    // mistaken for "there was nothing to render".
+    shelves[CAVITE] = [stockRow('Sting 250ml', 0)]
+    state.stock = 'loading'
+    const { container } = show()
+
+    expect(screen.queryByText('Everything on the shelf is in stock.')).toBeNull()
+    expect(screen.queryByText('Sting 250ml')).toBeNull()
+    // Every other panel's mock reports isLoading false, so these are the stock
+    // card's own placeholders.
+    expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0)
+  })
+
+  it('does not congratulate a branch that has no stock to be in stock', () => {
+    // An empty result is not an all-clear. It is a branch carrying nothing --
+    // and it is also what get_branch_inventory returns to a caller it will not
+    // answer, since its manager check is a WHERE clause and not an error. A
+    // permissions denial must not read as good news about the shelf.
+    manageCavite()
+    shelves[CAVITE] = []
+    show()
+
+    expect(screen.getByText('No stock is being tracked for this branch yet.')).toBeTruthy()
+    expect(screen.queryByText('Everything on the shelf is in stock.')).toBeNull()
+  })
+
+  it('says the stock could not be loaded rather than that it is fine', () => {
+    // A failed request carries no information about the shelf, and "everything
+    // is in stock" is a positive claim. The dashboard's other cards can fail
+    // quietly; this one cannot fail into a reassurance.
+    manageCavite()
+    state.stock = 'error'
+    show()
+
+    expect(screen.getByText('Stock levels could not be loaded. Refresh to try again.')).toBeTruthy()
+    expect(screen.queryByText('Everything on the shelf is in stock.')).toBeNull()
+  })
+
+  it('keeps the shortages it already knows when a refresh fails', () => {
+    // Discarding real alerts for an error message loses the shortage; showing
+    // them without a word passes stale figures off as current. Both, then.
+    manageCavite()
+    shelves[CAVITE] = [stockRow('Sting 250ml', 0)]
+    state.stock = 'stale'
+    show()
+
+    expect(screen.getByText('Sting 250ml')).toBeTruthy()
+    expect(screen.getByText('These levels could not be refreshed just now.')).toBeTruthy()
+    expect(screen.queryByText('Everything on the shelf is in stock.')).toBeNull()
+  })
+
+  it('says nothing about the shelf before a branch is even resolved', () => {
+    // The query is disabled until there is a branch, and a disabled query is
+    // neither loading nor failed -- the state that would slip past any check
+    // written as "not loading and not an error".
+    manageCavite()
+    state.branchesLoading = true
+    const { container } = show()
+
+    expect(screen.queryByText('Everything on the shelf is in stock.')).toBeNull()
+    expect(screen.queryByText('No stock is being tracked for this branch yet.')).toBeNull()
+    expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0)
+    expect(asked).not.toContain('')
   })
 })
 

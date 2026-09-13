@@ -226,6 +226,12 @@ function useInvalidateCatalogue() {
     queryClient.invalidateQueries({ queryKey: PRODUCTS_KEY })
     queryClient.invalidateQueries({ queryKey: BRANCH_PRODUCTS_KEY })
     queryClient.invalidateQueries({ queryKey: POS_CATALOGUE_KEY })
+    // A catalogue change moves branch INVENTORY too, which is easy to miss
+    // because no quantity moved. Starting to carry a product fires
+    // trg_create_branch_inventory and creates a row at zero -- an immediate
+    // out-of-stock alert on the dashboard; stopping carrying one cascades the
+    // row away. Both change what the stock card must show.
+    queryClient.invalidateQueries({ queryKey: ['pos-branch-inventory'] })
   }
 }
 

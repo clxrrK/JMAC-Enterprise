@@ -15,6 +15,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { ManagerBranchPicker, useManagerBranch } from '@/components/pos/ManagerBranchPicker'
+import { useBranchInventory } from '@/hooks/usePosInventory'
+import type { InventoryRow } from '@/lib/posInventory'
 import {
   useBusinessDay,
   useDashboardPaymentTotals,
@@ -173,35 +175,81 @@ function TakingsCard({
 /**
  * What is running out, as work rather than as a number.
  *
- * This was two half-width cards each holding a single count and no way to act
- * on it. A manager reading "3 out of stock" wants to go to Inventory, so the
- * rows are links; and when nothing is wrong the card says that in one line
- * rather than presenting two zeroes as though they were findings.
+ * A manager reading "3 out of stock" cannot act on it: they have to go to
+ * Inventory and find out which three. So the card names the products, gives
+ * each its actual remaining quantity, and links to that branch's stock page.
+ *
+ * Every qualifying product is listed -- there is no top-N, because a cap here
+ * would be a silent omission of exactly the thing the card exists to report.
+ * A branch with a long list scrolls inside the card instead, and the header
+ * says how many there are so the length is never a surprise.
  */
 function StockPanel({
-  summary,
-  loading,
+  rows,
+  failed,
+  branchId,
 }: {
-  summary: DashboardSummary | undefined
-  loading: boolean
+  /** The branch's stock, or `undefined` for every state that is not an answer:
+   * still loading, and also DISABLED, which is what the query is until a branch
+   * is resolved. A disabled query is neither loading nor failed, so a check
+   * written as "not loading and not an error" would print a positive claim
+   * about the shelf from a request that never ran. Reading the rows themselves
+   * has no such gap: an array means the server answered. */
+  rows: InventoryRow[] | undefined
+  failed: boolean
+  branchId: string
 }) {
-  const alerts = stockAlerts(summary)
+  const alerts = stockAlerts(rows)
+  const answered = rows !== undefined
 
   return (
-    <Panel title="Needs attention" icon={AlertTriangle}>
-      {loading ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-12" />
-          <Skeleton className="h-12" />
-        </div>
+    <Panel
+      title="Needs attention"
+      icon={AlertTriangle}
+      action={
+        alerts.length > 0 ? (
+          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+            {alerts.length} {alerts.length === 1 ? 'product' : 'products'}
+          </span>
+        ) : undefined
+      }
+    >
+      {!answered ? (
+        failed ? (
+          // Never the all-clear. "Everything is in stock" on a request that did
+          // not come back is the one wrong thing this card can say: it is a
+          // positive claim about the shelf made from no information at all.
+          <Empty>Stock levels could not be loaded. Refresh to try again.</Empty>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-12" />
+            <Skeleton className="h-12" />
+          </div>
+        )
+      ) : rows.length === 0 ? (
+        // No rows at all is not the same as no shortages. A branch that carries
+        // nothing has no shelf to be in stock, and the read returns an empty set
+        // rather than an error to a caller it will not answer -- so the one
+        // thing this state must not do is congratulate anybody.
+        <Empty>No stock is being tracked for this branch yet.</Empty>
       ) : alerts.length === 0 ? (
         <Empty>Everything on the shelf is in stock.</Empty>
       ) : (
-        <div className="flex flex-col gap-2">
+        // Scrolls rather than truncates: a long list must not stretch the
+        // dashboard row, and must not be shortened either.
+        <div className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+          {failed ? (
+            // A refetch failed over levels already in hand. Throwing them away
+            // for an error message would lose real shortages; saying nothing
+            // would pass stale figures off as current. So: keep them, date them.
+            <p className="text-xs text-muted-foreground">
+              These levels could not be refreshed just now.
+            </p>
+          ) : null}
           {alerts.map((alert) => (
             <Link
-              key={alert.kind}
-              to="/pos/stock"
+              key={alert.product_id}
+              to={`/pos/stock?branch=${branchId}`}
               className={cn(
                 'flex items-center gap-3 rounded-lg border p-3 transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -210,17 +258,27 @@ function StockPanel({
                   : 'border-warning/30 bg-warning/5 hover:bg-warning/10'
               )}
             >
+              {/* The label below already says the quantity in words a screen
+                  reader can use, so the figure is here to be seen, not read
+                  twice. */}
               <span
+                aria-hidden="true"
                 className={cn(
-                  'font-display text-2xl font-bold leading-none tabular-nums',
+                  'w-8 shrink-0 text-center font-display text-2xl font-bold leading-none tabular-nums',
                   alert.kind === 'out' ? 'text-destructive' : 'text-warning'
                 )}
               >
-                {alert.count}
+                {alert.quantity}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-sm font-medium text-foreground">{alert.label}</span>
-                <span className="block text-xs text-muted-foreground">{alert.hint}</span>
+                <span className="block truncate text-sm font-medium text-foreground">
+                  {alert.name}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {alert.kind === 'out'
+                    ? 'Out of stock'
+                    : `Low stock — ${alert.quantity} remaining`}
+                </span>
               </span>
               <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             </Link>
@@ -268,6 +326,12 @@ export default function PosDashboardPage() {
   const payments = useDashboardPaymentTotals(branchId || undefined)
   const top = useDashboardTopProducts(branchId || undefined)
   const recent = useDashboardRecentSales(branchId || undefined, day?.day_start)
+  // The same per-branch stock the Products and Inventory pages read. Stock
+  // alerts are a point-in-time fact about the shelf, so they are deliberately
+  // not taken from the day-scoped dashboard summary -- and this query key is
+  // already invalidated by checkout, receiving and adjustments, so the card
+  // refreshes on its own without a new mechanism.
+  const inventory = useBranchInventory(branchId || undefined)
 
   const branchName = managed.find((b) => b.id === branchId)?.name ?? ''
   const stats = summary.data
@@ -332,7 +396,7 @@ export default function PosDashboardPage() {
           />
         </div>
 
-        <StockPanel summary={stats} loading={loading} />
+        <StockPanel rows={inventory.data} failed={inventory.isError} branchId={branchId} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

@@ -47,15 +47,24 @@ export default function PosStockPage() {
     return isAdministrator ? active : active.filter((b) => posAccess.branchIds.includes(b.id))
   }, [branches, posAccess.branchIds, isAdministrator])
 
-  const [branchId, setBranchId] = React.useState('')
-  React.useEffect(() => {
-    if (!branchId && myBranches.length > 0) setBranchId(myBranches[0].id)
-  }, [branchId, myBranches])
-
-  const { data: rows, isLoading } = useBranchInventory(branchId || undefined)
   // ?history=1 is how the Requests tab's History button gets here; the two
   // views share one history implementation rather than each having its own.
+  // ?branch= is how the dashboard's stock alerts arrive, naming the branch
+  // whose shelf raised them.
   const [searchParams] = useSearchParams()
+  const requestedBranch = searchParams.get('branch')
+
+  const [branchId, setBranchId] = React.useState('')
+  React.useEffect(() => {
+    if (branchId || myBranches.length === 0) return
+    // Honoured only when the account actually holds that branch: myBranches is
+    // already filtered by access, so a hand-edited query string falls through
+    // to the default rather than granting anything.
+    const requested = myBranches.find((b) => b.id === requestedBranch)
+    setBranchId(requested?.id ?? myBranches[0].id)
+  }, [branchId, myBranches, requestedBranch])
+
+  const { data: rows, isLoading } = useBranchInventory(branchId || undefined)
   const [showHistory, setShowHistory] = React.useState(searchParams.get('history') === '1')
   const { data: movements } = useBranchMovements(branchId || undefined, showHistory)
   const setThreshold = useSetLowStockThreshold()

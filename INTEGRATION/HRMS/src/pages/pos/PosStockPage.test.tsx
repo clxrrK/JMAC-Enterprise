@@ -70,8 +70,14 @@ vi.mock('@/hooks/useBranches', () => ({
   useBranches: () => ({ data: branches, isLoading: false }),
 }))
 
+/** Which branch the stock read was actually asked about. */
+const askedFor: (string | undefined)[] = []
+
 vi.mock('@/hooks/usePosInventory', () => ({
-  useBranchInventory: () => ({ data: state.rows, isLoading: false }),
+  useBranchInventory: (branchId: string | undefined) => {
+    askedFor.push(branchId)
+    return { data: state.rows, isLoading: false }
+  },
   useBranchMovements: (_b: string | undefined, enabled: boolean) => ({
     data: enabled ? state.movements : [],
     isLoading: false,
@@ -81,9 +87,9 @@ vi.mock('@/hooks/usePosInventory', () => ({
 
 const { default: PosStockPage } = await import('@/pages/pos/PosStockPage')
 
-function renderPage() {
+function renderPage(url = '/pos/stock') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[url]}>
       <PosStockPage />
     </MemoryRouter>
   )
@@ -98,6 +104,38 @@ afterEach(() => {
   state.movements = []
   setThreshold.mockReset()
   setAvailability.mockReset()
+  askedFor.length = 0
+})
+
+/**
+ * Arriving here from a stock alert.
+ *
+ * The dashboard's "Needs attention" card names a product at a named branch and
+ * links here. Landing on a different branch's shelf than the one that raised
+ * the alert makes the card's own figures look wrong.
+ */
+describe('the branch a link asks for', () => {
+  it('opens the branch the alert came from', () => {
+    state.branchIds = [BRANCH_A, BRANCH_B]
+    renderPage(`/pos/stock?branch=${BRANCH_B}`)
+    expect(askedFor).toContain(BRANCH_B)
+    expect(askedFor).not.toContain(BRANCH_A)
+  })
+
+  it('falls back to the first branch when no branch is named', () => {
+    state.branchIds = [BRANCH_A, BRANCH_B]
+    renderPage()
+    expect(askedFor).toContain(BRANCH_A)
+  })
+
+  it('ignores a branch the account does not hold', () => {
+    // A hand-edited query string is not a grant. The RPC would refuse it as
+    // well; this stops the page from asking in the first place.
+    state.branchIds = [BRANCH_A]
+    renderPage(`/pos/stock?branch=${BRANCH_B}`)
+    expect(askedFor).not.toContain(BRANCH_B)
+    expect(askedFor).toContain(BRANCH_A)
+  })
 })
 
 describe('what a POS manager sees', () => {

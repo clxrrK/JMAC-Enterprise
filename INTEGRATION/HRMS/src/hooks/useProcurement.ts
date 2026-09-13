@@ -385,8 +385,15 @@ export function useReceiveDelivery(branchId: string | undefined) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: PROCUREMENT_KEYS.deliveries(branchId ?? 'none') })
-      queryClient.invalidateQueries({ queryKey: ['pos'] })
-      queryClient.invalidateQueries({ queryKey: ['branch-inventory'] })
+      // These are the POS keys receiving actually moves. They were ['pos'] and
+      // ['branch-inventory'], which match NOTHING: every POS key is its own
+      // string, 'pos-branch-inventory' and 'pos-catalogue', and invalidation
+      // compares elements rather than prefixes of one. So confirming a delivery
+      // refreshed no POS screen at all -- the branch's Inventory page and the
+      // manager's dashboard both kept showing the stock from before it arrived.
+      queryClient.invalidateQueries({ queryKey: ['pos-branch-inventory'] })
+      queryClient.invalidateQueries({ queryKey: ['pos-inventory-movements'] })
+      queryClient.invalidateQueries({ queryKey: ['pos-catalogue'] })
       // Receiving changes what Finance sees too: the order's received and
       // outstanding quantities, the demand queue, and the branch's own progress
       // view. Only the POS keys were invalidated before, so a Finance tab left

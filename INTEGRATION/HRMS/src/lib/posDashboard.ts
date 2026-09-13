@@ -127,38 +127,82 @@ export function paymentShares(
 }
 
 /**
- * What is running out, as things to go and deal with.
+ * The level at or below which a branch product is worth flagging.
  *
- * Out of stock first: a product that is offered and unavailable is costing
- * sales right now, where a low one is a warning about later. Both are omitted
- * when the count is zero -- a manager does not need to be told twice a day
- * that nothing is wrong.
+ * A fixed five, and deliberately not `pos_branch_inventory.low_stock_threshold`.
+ * That column is `not null default 0`, so for every product nobody has
+ * explicitly configured, "low" meant `quantity <= 0` -- which the dashboard
+ * then intersected with `quantity > 0`. An empty set by construction: a branch
+ * that had never set a threshold could not raise a low-stock alert at all, no
+ * matter how little stock it held.
+ */
+export const LOW_STOCK_ALERT_LEVEL = 5
+
+export interface StockAlert {
+  product_id: string
+  name: string
+  quantity: number
+  kind: 'out' | 'low'
+}
+
+/**
+ * What is running out, as products to go and deal with.
+ *
+ * Rows come from `get_branch_inventory` -- the same authoritative per-branch
+ * stock the Products and Inventory pages read, manager-gated in the database
+ * and scoped to one branch by argument. Not the dashboard summary's counts,
+ * which were the bug: they filtered on `bp.is_available`, so a product a
+ * manager had stopped on the till vanished from the alerts at the exact moment
+ * its stock hit zero.
+ *
+ * The quantity condition is `<= 5` and nothing else. No `> 0` guard, because
+ * zero is the most urgent case and a truthiness check would drop it. Sold-today,
+ * ever-sold and business-date are all irrelevant here and none is consulted.
+ *
+ * Two filters that look alike and are not:
+ *
+ *   `pos_branch_products.is_available` -- STOPPED ON THE TILL. Not applied.
+ *   Whether a till is currently offering something says nothing about whether
+ *   there is any of it, and a manager who pauses a line still needs to know the
+ *   shelf is empty before they restart it.
+ *
+ *   `pos_products.status` -- RETIRED OR NOT YET LAUNCHED ENTERPRISE-WIDE. Applied.
+ *   Archiving a product is only a status change: its branch rows survive at
+ *   whatever quantity they held, and `get_pos_catalogue` will never offer it
+ *   again. Listing those is not a shortage anybody can act on -- no delivery
+ *   will arrive and no sale is being lost -- so they would be permanent noise
+ *   in a card whose whole job is "go and deal with this".
+ *
+ * A row whose status is absent is kept. This card's failure mode is hiding a
+ * real empty shelf, so an unknown value must never be the reason something
+ * disappears.
+ *
+ * Out of stock first, then the lowest quantities: the empty shelves are
+ * costing sales now, the rest are warnings about later. Name breaks ties so
+ * the order is stable rather than whatever the server happened to return.
  */
 export function stockAlerts(
-  summary: DashboardSummary | undefined
-): { kind: 'out' | 'low'; count: number; label: string; hint: string }[] {
-  if (!summary) return []
-  const alerts: { kind: 'out' | 'low'; count: number; label: string; hint: string }[] = []
-  if (Number(summary.out_of_stock_count) > 0) {
-    alerts.push({
-      kind: 'out',
-      count: Number(summary.out_of_stock_count),
-      label: 'Out of stock',
-      // Short enough to hold one line in a quarter-width card. The longer
-      // wording wrapped, which on an alert reads as a paragraph to read
-      // rather than a number to act on.
-      hint: 'Offered here, none on hand',
-    })
-  }
-  if (Number(summary.low_stock_count) > 0) {
-    alerts.push({
-      kind: 'low',
-      count: Number(summary.low_stock_count),
-      label: 'Low stock',
-      hint: 'At or under the branch level',
-    })
-  }
-  return alerts
+  rows:
+    | {
+        product_id: string
+        product_name: string
+        quantity_on_hand: number | null
+        product_status?: string | null
+      }[]
+    | undefined
+): StockAlert[] {
+  if (!rows) return []
+
+  return rows
+    .filter((row) => row.product_status == null || row.product_status === 'active')
+    .map((row) => ({
+      product_id: row.product_id,
+      name: row.product_name,
+      quantity: Number(row.quantity_on_hand ?? 0),
+    }))
+    .filter((row) => Number.isFinite(row.quantity) && row.quantity <= LOW_STOCK_ALERT_LEVEL)
+    .map((row) => ({ ...row, kind: row.quantity === 0 ? ('out' as const) : ('low' as const) }))
+    .sort((a, b) => a.quantity - b.quantity || a.name.localeCompare(b.name))
 }
 
 /** A business date as the page should title it. The string arrives from the
