@@ -17,6 +17,13 @@
 // browser bundle, never in a database row, and never in a response.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import {
+  brevoClient,
+  checkProvider,
+  deliverDue,
+  outboxFromSupabase,
+  type OutboxRow,
+} from './delivery.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -48,9 +55,6 @@ const TRACK_URL = 'https://jmac-enterprise.vercel.app/track'
  */
 const SENDER_NAME = Deno.env.get('BREVO_SENDER_NAME') ?? 'JMAC Enterprise'
 
-/** How many attempts before a row is left alone for a person to look at.
- *  Bounded on purpose: an address that will never accept mail must not be
- *  retried forever. */
 /** Constant-time compare, so the token cannot be discovered a byte at a time. */
 function tokensMatch(a: string, b: string): boolean {
   const ea = new TextEncoder().encode(a)
@@ -59,21 +63,6 @@ function tokensMatch(a: string, b: string): boolean {
   let diff = 0
   for (let i = 0; i < ea.length; i++) diff |= ea[i] ^ eb[i]
   return diff === 0
-}
-
-const MAX_ATTEMPTS = 5
-
-/** Backoff in minutes, indexed by attempt. Slow enough to ride out an outage,
- *  short enough that a real interview notice is not days late. */
-const BACKOFF_MINUTES = [1, 5, 30, 120, 480]
-
-interface OutboxRow {
-  id: string
-  event_type: string
-  recipient_email: string
-  recipient_name: string
-  attempts: number
-  payload: Record<string, string>
 }
 
 /** Subject and body per event. Applicant-safe by construction: the only values
@@ -316,210 +305,73 @@ Deno.serve(async (req: Request) => {
     }
 
     const senderEmail = Deno.env.get('BREVO_SENDER_EMAIL')?.trim()
+    const outbox = outboxFromSupabase(admin)
+    const provider = brevoClient(brevoKey)
+
+    // The health check: provider access, the sender, one message's delivery
+    // events, and the queue as counts. Answered here -- after the token gate,
+    // before anything is claimed -- so asking "is email working?" can never send
+    // email. It used to run AFTER the queue had been processed, which made every
+    // health check a delivery run. It also comes before the sender guard, so a
+    // missing sender can be diagnosed rather than merely refused.
+    const url = new URL(req.url)
+    if (url.searchParams.get('diagnostics') === '1') {
+      return json(
+        await checkProvider({
+          provider,
+          counts: () => outbox.counts(new Date()),
+          senderEmail: senderEmail ?? '',
+          messageId: url.searchParams.get('messageId'),
+        })
+      )
+    }
+
     if (!senderEmail) {
       // Same reasoning as the key: refuse rather than send from something that
       // will be rejected downstream and recorded here as a success.
       console.error('BREVO_SENDER_EMAIL is not configured; refusing to send.')
       return json({ error: 'BREVO_SENDER_EMAIL is not configured for this project.' }, 503)
     }
-    const SENDER = { name: SENDER_NAME, email: senderEmail }
 
+    const summary = await deliverDue({
+      outbox,
+      provider,
+      sender: { name: SENDER_NAME, email: senderEmail },
+      render,
+    })
 
-    // Claim a batch. `processing` is set first so two concurrent runs cannot
-    // send the same row twice -- the outbox is at-least-once, and the unique
-    // index plus this claim keep it close to exactly-once.
-    const { data: due, error: dueError } = await admin
-      .from('applicant_notification_outbox')
-      .select('id, event_type, recipient_email, recipient_name, attempts, payload')
-      .in('status', ['pending', 'failed'])
-      .lte('next_attempt_at', new Date().toISOString())
-      .lt('attempts', MAX_ATTEMPTS)
-      .order('created_at', { ascending: true })
-      .limit(25)
-
-    if (dueError) {
-      console.error('outbox read failed:', dueError.message)
+    if (summary.error === 'queue_unreadable') {
       return json({ error: 'Could not read the notification queue.' }, 500)
     }
 
-    const rows = (due ?? []) as OutboxRow[]
-    let sent = 0
-    let failed = 0
-
-    for (const row of rows) {
-      // The claim is a compare-and-swap: the row only becomes ours if it was
-      // still pending or failed when the update landed. An immediate run and a
-      // scheduled run racing the same row means exactly one of them gets zero
-      // rows back and moves on -- which is what keeps a nudge from ever
-      // doubling a send.
-      //
-      // claimed_at is stamped here, in the same statement, so it records when
-      // the row was actually picked up rather than when this batch started.
-      // created_at -> claimed_at is queue wait; claimed_at -> sent_at is Brevo.
-      const claimed = await admin
-        .from('applicant_notification_outbox')
-        .update({ status: 'processing', claimed_at: new Date().toISOString() })
-        .eq('id', row.id)
-        .in('status', ['pending', 'failed'])
-        .select('id')
-      if (!claimed.data || claimed.data.length === 0) continue // another run took it
-
-      const { subject, text, html } = render(row)
-      const attempts = row.attempts + 1
-
-      try {
-        const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-          method: 'POST',
-          headers: { 'api-key': brevoKey, 'Content-Type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify({
-            sender: SENDER,
-            to: [{ email: row.recipient_email, name: row.recipient_name }],
-            subject,
-            textContent: text,
-            htmlContent: html,
-          }),
-        })
-
-        if (res.ok) {
-          // Brevo returns { messageId }. It is the key its delivery log, bounce
-          // list and event webhook are all keyed by -- the only way to answer
-          // "did this actually arrive?" later. Parsing it must never fail the
-          // send: the message is already accepted, and treating an unreadable
-          // body as failure would deliver it twice.
-          let providerMessageId: string | null = null
-          try {
-            const accepted = await res.json()
-            const id = accepted?.messageId ?? accepted?.messageIds?.[0]
-            if (typeof id === 'string') providerMessageId = id.slice(0, 200)
-          } catch {
-            providerMessageId = null
-          }
-
-          await admin.from('applicant_notification_outbox')
-            .update({
-              status: 'sent',
-              sent_at: new Date().toISOString(),
-              attempts,
-              last_error: null,
-              provider_message_id: providerMessageId,
-            })
-            .eq('id', row.id)
-          sent += 1
-        } else {
-          const body = (await res.text()).slice(0, 300)
-          const give_up = attempts >= MAX_ATTEMPTS
-          const wait = BACKOFF_MINUTES[Math.min(attempts - 1, BACKOFF_MINUTES.length - 1)]
-          await admin.from('applicant_notification_outbox')
-            .update({
-              status: 'failed',
-              attempts,
-              // Kept server-side for an operator. get_applicant_notifications
-              // deliberately does not return it, so a provider message never
-              // reaches a screen.
-              last_error: `HTTP ${res.status}: ${body}`,
-              next_attempt_at: give_up
-                ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
-                : new Date(Date.now() + wait * 60 * 1000).toISOString(),
-            })
-            .eq('id', row.id)
-          failed += 1
-          console.error(`notification ${row.id} failed (attempt ${attempts}): HTTP ${res.status}`)
-        }
-      } catch (err) {
-        const attemptsNow = attempts
-        const wait = BACKOFF_MINUTES[Math.min(attemptsNow - 1, BACKOFF_MINUTES.length - 1)]
-        await admin.from('applicant_notification_outbox')
-          .update({
-            status: 'failed',
-            attempts: attemptsNow,
-            last_error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
-            next_attempt_at: new Date(Date.now() + wait * 60 * 1000).toISOString(),
-          })
-          .eq('id', row.id)
-        failed += 1
-        console.error(`notification ${row.id} threw:`, err instanceof Error ? err.message : err)
-      }
-    }
-
-    // When an applicant reports a missing email, the first question asked is
-    // whether the daily sending allowance ran out. That is answerable rather
-    // than guessable, so this reports what the provider says instead. Off by
-    // default: the five-minute cron has no reason to spend a call on it.
-    let quota: Record<string, unknown> | undefined
-    if (new URL(req.url).searchParams.get('diagnostics') === '1' && brevoKey) {
-      try {
-        const acct = await fetch('https://api.brevo.com/v3/account', {
-          headers: { 'api-key': brevoKey, accept: 'application/json' },
-        })
-        if (acct.ok) {
-          const info = await acct.json()
-          // Plan shape only -- no keys, no addresses, no account identifiers.
-          const plans = Array.isArray(info?.plan) ? info.plan : []
-          quota = {
-            plans: plans.map((pl: Record<string, unknown>) => ({
-              type: pl?.type ?? null,
-              credits: pl?.credits ?? null,
-              creditsType: pl?.creditsType ?? null,
-            })),
-          }
-        } else {
-          quota = { error: `provider returned HTTP ${acct.status}` }
-        }
-      } catch {
-        quota = { error: 'provider unreachable' }
-      }
-
-      const messageId = new URL(req.url).searchParams.get('messageId')
-      if (messageId) {
-        try {
-          const res = await fetch(
-            `https://api.brevo.com/v3/smtp/statistics/events?messageId=${encodeURIComponent(messageId)}&limit=50`,
-            { headers: { 'api-key': brevoKey, accept: 'application/json' } }
-          )
-          if (res.ok) {
-            const found = await res.json()
-            const events = Array.isArray(found?.events) ? found.events : []
-            quota = {
-              ...(quota ?? {}),
-              // Event names and times only -- no recipient, no subject, no body.
-              message_events: events.map((ev: Record<string, unknown>) => ({
-                event: ev?.event ?? null,
-                date: ev?.date ?? null,
-                reason: ev?.reason ?? null,
-              })),
-            }
-          } else {
-            quota = { ...(quota ?? {}), message_events: { error: `HTTP ${res.status}` } }
-          }
-        } catch {
-          quota = { ...(quota ?? {}), message_events: { error: 'provider unreachable' } }
-        }
-      }
-
-      try {
-        const res = await fetch('https://api.brevo.com/v3/senders', {
-          headers: { 'api-key': brevoKey, accept: 'application/json' },
-        })
-        if (res.ok) {
-          const list = await res.json()
-          const senders = Array.isArray(list?.senders) ? list.senders : []
-          quota = {
-            ...(quota ?? {}),
-            // Addresses only, plus whether the provider considers each usable.
-            verified_senders: senders.map((sn: Record<string, unknown>) => ({
-              name: sn?.name ?? null,
-              email: sn?.email ?? null,
-              active: sn?.active ?? null,
-            })),
-          }
-        }
-      } catch {
-        // Diagnostics must never fail the run.
-      }
-    }
-
     // Counts only. No addresses, no payloads, no provider text.
-    return json({ considered: rows.length, sent, failed, ...(quota ? { quota } : {}) })
+    const counts = {
+      considered: summary.considered,
+      sent: summary.sent,
+      failed: summary.failed,
+      parked_stale: summary.parked_stale,
+      held_for_review: summary.held_for_review,
+      unrecorded: summary.unrecorded,
+      db_errors: summary.db_errors,
+    }
+
+    if (summary.halted) {
+      // A 503, so a refusal of this server stands out in net._http_response and
+      // the function log instead of reading as a quiet 200 with failed: 1.
+      return json(
+        {
+          error:
+            summary.halted === 'ip_blocked'
+              ? "Brevo refused this server's IP address. Delivery is paused; no notification's attempts were spent."
+              : "Brevo refused the API key. Delivery is paused; no notification's attempts were spent.",
+          halted: summary.halted,
+          ...counts,
+        },
+        503
+      )
+    }
+
+    return json(counts)
   } catch (err) {
     console.error('send-applicant-notifications unhandled:', err instanceof Error ? err.message : err)
     return json({ error: 'Could not process the notification queue.' }, 500)

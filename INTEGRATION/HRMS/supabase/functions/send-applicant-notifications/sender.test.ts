@@ -19,6 +19,10 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const source = readFileSync(join(__dirname, 'index.ts'), 'utf8')
+/** The send, the claim and the retry rules live here now, extracted so their
+ *  failure handling can be tested for behaviour (delivery.test.ts). These
+ *  contract checks read both files, so moving a rule cannot drop it. */
+const delivery = readFileSync(join(__dirname, 'delivery.ts'), 'utf8')
 
 /** The address that could not deliver. */
 const INVALID_SENDER = 'no-reply@jmac-enterprise.com'
@@ -33,7 +37,8 @@ function executableCode(text: string): string {
     .join('\n')
 }
 
-const code = executableCode(source)
+const entry = executableCode(source)
+const code = `${entry}\n${executableCode(delivery)}`
 
 describe('the recruitment sender', () => {
   it('is not the unverified jmac-enterprise.com address', () => {
@@ -61,10 +66,11 @@ describe('the recruitment sender', () => {
   })
 
   it('fails closed when the sender is not configured', () => {
-    expect(code).toContain('BREVO_SENDER_EMAIL is not configured')
-    // Refused before any message is attempted, so nothing is recorded as sent.
-    const guard = code.indexOf('BREVO_SENDER_EMAIL is not configured')
-    const send = code.indexOf('api.brevo.com/v3/smtp/email')
+    expect(entry).toContain('BREVO_SENDER_EMAIL is not configured')
+    // Refused before the delivery loop runs, so nothing is attempted and
+    // nothing is recorded as sent.
+    const guard = entry.indexOf('BREVO_SENDER_EMAIL is not configured')
+    const send = entry.indexOf('deliverDue(')
     expect(guard).toBeGreaterThan(-1)
     expect(send).toBeGreaterThan(guard)
   })
@@ -110,6 +116,22 @@ describe('the delivery machinery is preserved', () => {
 
   it('claims only rows that still need sending', () => {
     expect(code).toContain("in('status', ['pending', 'failed'])")
+  })
+
+  it('answers the health check before anything is claimed or sent', () => {
+    // diagnostics=1 used to run AFTER the queue had been processed, so a
+    // health check was a delivery run. It must return first -- and only after
+    // the token gate, since it reads the provider account.
+    const gate = entry.indexOf('tokensMatch(presented')
+    const check = entry.indexOf("searchParams.get('diagnostics')")
+    const answered = entry.indexOf('await checkProvider(')
+    const deliver = entry.indexOf('deliverDue(')
+    expect(gate).toBeGreaterThan(-1)
+    expect(check).toBeGreaterThan(gate)
+    expect(answered).toBeGreaterThan(check)
+    expect(deliver).toBeGreaterThan(answered)
+    // And the branch returns rather than falling through into delivery.
+    expect(entry.slice(check, deliver)).toMatch(/return json\(\s*await checkProvider\(/)
   })
 
   it('never puts a secret in the response', () => {
