@@ -287,7 +287,14 @@ Deno.serve(async (req: Request) => {
     // browser. If it ever leaked, the worst it could do is deliver mail that
     // was already queued and already addressed.
     const { data: expectedToken, error: tokenError } = await admin.rpc('applicant_notify_token')
-    if (tokenError || !expectedToken) {
+    if (tokenError) {
+      // A failed lookup, not a missing token: one run on 2026-10-03 hit this
+      // between two healthy runs, and reporting it as "not configured" sent
+      // the diagnosis the wrong way. Still refused -- nothing runs unverified.
+      console.error(`could not read applicant_notify_token; refusing to run: ${tokenError.message}`)
+      return json({ error: 'Could not verify the delivery token.' }, 503)
+    }
+    if (!expectedToken) {
       console.error('applicant_notify_token is not configured; refusing to run.')
       return json({ error: 'Delivery is not configured.' }, 503)
     }

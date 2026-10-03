@@ -108,8 +108,8 @@ limit 20;
 -- net._http_response has no URL column. The worker's answers are recognisable
 -- by their body: {"considered": ...} on a run, {"error":"Not authorised."} on a
 -- token mismatch, {"error":"Delivery is not configured."} when the Vault token
--- is missing, and -- after this fix -- a 503 carrying "halted" when Brevo
--- refuses the server.
+-- is missing, {"error":"Could not verify the delivery token."} when reading it
+-- failed, and a 503 carrying "halted" when Brevo refuses the server.
 select
     status_code,
     timed_out,
@@ -117,7 +117,9 @@ select
         when content like '%"considered"%' and content like '%"halted"%' then 'worker: provider refused server'
         when content like '%"considered"%' then 'worker: ran'
         when content like '%Not authorised%' then 'worker: TOKEN MISMATCH'
-        when content like '%Delivery is not configured%' then 'worker: VAULT TOKEN MISSING'
+        when content like '%Could not verify the delivery token%' then 'worker: token lookup failed (transient if isolated)'
+        -- Before the fix that split them, a failed lookup also read like this.
+        when content like '%Delivery is not configured%' then 'worker: token missing, or (old worker) lookup failed'
         when content like '%BREVO_%is not configured%' then 'worker: BREVO SECRET MISSING'
         when error_msg is not null then 'transport error'
         else 'other caller or unrecognised'

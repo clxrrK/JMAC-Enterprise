@@ -118,6 +118,18 @@ describe('the delivery machinery is preserved', () => {
     expect(code).toContain("in('status', ['pending', 'failed'])")
   })
 
+  it('tells a failed token lookup from a missing token, and refuses both', () => {
+    // One production run failed its lookup between two healthy runs and was
+    // reported as "not configured" -- the wrong diagnosis.
+    expect(entry).toContain('Could not verify the delivery token.')
+    expect(entry).toContain('Delivery is not configured.')
+    expect(entry).toMatch(/could not read applicant_notify_token[^`]*\$\{tokenError\.message\}/)
+    // Both before the gate, so neither path runs anything unverified.
+    const gate = entry.indexOf('tokensMatch(presented')
+    expect(entry.indexOf('Could not verify the delivery token.')).toBeLessThan(gate)
+    expect(entry.indexOf('Delivery is not configured.')).toBeLessThan(gate)
+  })
+
   it('answers the health check before anything is claimed or sent', () => {
     // diagnostics=1 used to run AFTER the queue had been processed, so a
     // health check was a delivery run. It must return first -- and only after
