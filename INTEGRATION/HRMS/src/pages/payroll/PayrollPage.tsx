@@ -57,7 +57,7 @@ function StatCard({
   index,
 }: {
   label: string
-  value: string
+  value: React.ReactNode
   icon: React.ComponentType<{ className?: string }>
   isLoading: boolean
   index: number
@@ -69,9 +69,12 @@ function StatCard({
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
             <Icon className="h-4 w-4" />
           </div>
-          <div>
+          {/* min-w-0 keeps the figure inside the card instead of widening it.
+            * The grid below leaves room for one line up to ₱999,999,999.99;
+            * anything longer wraps here rather than running into the next card. */}
+          <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{label}</p>
-            {isLoading ? <Skeleton className="mt-1 h-6 w-16" /> : <p className="font-display text-xl font-bold text-foreground">{value}</p>}
+            {isLoading ? <Skeleton className="mt-1 h-6 w-16" /> : <p className="font-display text-xl font-bold text-foreground [overflow-wrap:anywhere]">{value}</p>}
           </div>
         </CardContent>
       </Card>
@@ -348,19 +351,38 @@ export default function PayrollPage() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-            <StatCard
-              label="Payroll Period"
-              value={`${formatDate(selectedPeriod.period_start)} – ${formatDate(selectedPeriod.period_end)}`}
-              icon={Wallet}
-              isLoading={false}
-              index={0}
-            />
-            <StatCard label="Employees Included" value={String(stats?.employeesIncluded ?? 0)} icon={Users2} isLoading={statsLoading} index={1} />
-            <StatCard label="Gross Payroll" value={formatMoney(stats?.grossPayroll ?? 0, 'PHP')} icon={TrendingUp} isLoading={statsLoading} index={2} />
-            <StatCard label="Total Deductions" value={formatMoney(stats?.totalDeductions ?? 0, 'PHP')} icon={TrendingDown} isLoading={statsLoading} index={3} />
-            <StatCard label="Total Net Payroll" value={formatMoney(stats?.totalNetPayroll ?? 0, 'PHP')} icon={Wallet} isLoading={statsLoading} index={4} />
-            <StatCard label="Payslips Released" value={String(stats?.payslipsReleased ?? 0)} icon={FileCheck} isLoading={statsLoading} index={5} />
+          {/* Columns follow the width this row actually gets -- a container
+            * query, not a viewport breakpoint. The page sits beside a 16rem
+            * sidebar and is capped at 72rem (max-w-6xl), so xl's six columns
+            * left each card 150-182px, and ₱355,000.00 ran into its neighbour.
+            *
+            * A card needs 16rem: about 5.4rem of border, padding, icon and gap,
+            * and 10.6rem for a figure as long as ₱999,999,999.99 in the display
+            * face. So 2 columns from 2×16 + 0.75 = 32.75rem, 3 from 49.5rem, 6
+            * from 99.75rem -- 1, 2, 3, 6 keeps the rows even. At this page's
+            * width a large screen shows two rows of three. */}
+          <div className="@container">
+            <div className="grid grid-cols-1 gap-3 @min-[32.75rem]:grid-cols-2 @min-[49.5rem]:grid-cols-3 @min-[99.75rem]:grid-cols-6">
+              <StatCard
+                label="Payroll Period"
+                value={
+                  // Each date stays whole: a narrow card breaks between them,
+                  // "Sep 1, 2026 –" over "Oct 31, 2026", never inside one.
+                  <>
+                    <span className="whitespace-nowrap">{formatDate(selectedPeriod.period_start)} –</span>{' '}
+                    <span className="whitespace-nowrap">{formatDate(selectedPeriod.period_end)}</span>
+                  </>
+                }
+                icon={Wallet}
+                isLoading={false}
+                index={0}
+              />
+              <StatCard label="Employees Included" value={String(stats?.employeesIncluded ?? 0)} icon={Users2} isLoading={statsLoading} index={1} />
+              <StatCard label="Gross Payroll" value={formatMoney(stats?.grossPayroll ?? 0, 'PHP')} icon={TrendingUp} isLoading={statsLoading} index={2} />
+              <StatCard label="Total Deductions" value={formatMoney(stats?.totalDeductions ?? 0, 'PHP')} icon={TrendingDown} isLoading={statsLoading} index={3} />
+              <StatCard label="Total Net Payroll" value={formatMoney(stats?.totalNetPayroll ?? 0, 'PHP')} icon={Wallet} isLoading={statsLoading} index={4} />
+              <StatCard label="Payslips Released" value={String(stats?.payslipsReleased ?? 0)} icon={FileCheck} isLoading={statsLoading} index={5} />
+            </div>
           </div>
 
           {/* Workflow bar — where the period sits on
