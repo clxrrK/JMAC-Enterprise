@@ -96,6 +96,37 @@ export function usePayrollRecord(id: string | undefined) {
   })
 }
 
+/**
+ * A payslip opened from My Workspace: the signed-in person's own released
+ * record, and nothing else.
+ *
+ * RLS already holds most accounts to that -- their own records, released only --
+ * but it lets HR read everybody's, because HR Payroll has to. My Workspace is
+ * about the person signed in whatever else they do, so this asks for their
+ * record rather than trusting the id in the address: an HR Manager who pastes a
+ * colleague's id here gets "not available", and opens that payslip from HR
+ * Payroll instead.
+ */
+export function useMyPayrollRecord(id: string | undefined) {
+  const { profile } = useAuth()
+  const employeeId = profile?.employee_id
+  return useQuery({
+    queryKey: ['my-payroll-record', employeeId, id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('payroll_records')
+        .select(RECORD_SELECT)
+        .eq('id', id as string)
+        .eq('employee_id', employeeId as string)
+        .eq('status', 'released')
+        .maybeSingle()
+      if (error) throw error
+      return data as unknown as PayrollRecord | null
+    },
+    enabled: !!id && !!employeeId,
+  })
+}
+
 export function usePayrollPeriodStats(periodId: string | undefined) {
   return useQuery({
     queryKey: ['payroll-period-stats', periodId],

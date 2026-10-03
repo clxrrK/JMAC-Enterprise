@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { useMyPayrollRecords, useMyPortalRealtimeAlerts, type MyPayrollRecord } from '@/hooks/useEmployeePortal'
 import { getLatestPayslip } from '@/hooks/usePayroll'
 import { PAYROLL_STATUS_LABEL, PAYROLL_STATUS_VARIANT } from '@/lib/payrollLabels'
+import { myPayslipPath } from '@/lib/payslipPaths'
 import { formatMoney, type CurrencyCode } from '@/lib/currency'
 
 function formatDate(iso: string | null) {
@@ -47,7 +48,9 @@ export default function MyPayrollPage() {
             size="sm"
             onClick={(e) => {
               e.stopPropagation()
-              navigate(`/dashboard/payroll/${row.original.id}/payslip`)
+              // My Workspace's own address for it, not HR's: the shell follows
+              // the address, and this one keeps the employee where they are.
+              navigate(myPayslipPath(row.original.id))
             }}
           >
             <FileText className="h-4 w-4" />

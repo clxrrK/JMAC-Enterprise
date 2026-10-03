@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { usePayrollRecord, getLatestPayslip } from '@/hooks/usePayroll'
 import { PAYROLL_STATUS_LABEL, PAYROLL_STATUS_VARIANT } from '@/lib/payrollLabels'
+import { hrPayslipPath } from '@/lib/payslipPaths'
 import { formatMoney, type CurrencyCode } from '@/lib/currency'
 import { formatMinutesAsDuration, formatHoursAsDuration } from '@/lib/attendanceCalculations'
 
@@ -78,7 +79,7 @@ export function PayrollDetailsSheet({
                     <Badge variant={PAYROLL_STATUS_VARIANT[record.status]}>{PAYROLL_STATUS_LABEL[record.status]}</Badge>
                   </div>
                   {payslip && (
-                    <Button variant="outline" size="sm" onClick={() => navigate(`/dashboard/payroll/${record.id}/payslip`)}>
+                    <Button variant="outline" size="sm" onClick={() => navigate(hrPayslipPath(record.id))}>
                       <Printer className="h-3.5 w-3.5" />
                       View / Print Payslip ({payslip.payslip_number})
                     </Button>

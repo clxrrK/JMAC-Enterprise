@@ -71,7 +71,7 @@ import AdminPosReportsPage from '@/pages/admin/AdminPosReportsPage'
 import PosInventoryPage from '@/pages/admin/PosInventoryPage'
 import LeavePage from '@/pages/leave/LeavePage'
 import PayrollPage from '@/pages/payroll/PayrollPage'
-import PayslipPrintPage from '@/pages/payroll/PayslipPrintPage'
+import PayslipPrintPage, { MyPayslipPage } from '@/pages/payroll/PayslipPrintPage'
 import ReportsPage from '@/pages/reports/ReportsPage'
 import GenerateReportPage from '@/pages/reports/GenerateReportPage'
 import ReportPrintPage from '@/pages/reports/ReportPrintPage'
@@ -547,11 +547,12 @@ export default function App() {
               <Route
                 path="payroll/:recordId/payslip"
                 element={
-                  // Employees may view their own payslip here too — RLS on
-                  // payroll_records/payslips scopes the underlying query to
-                  // "own records only" regardless of role, so widening this
-                  // route can't leak another employee's payslip.
-                  <ProtectedRoute allowedRoles={['admin', 'hr_manager', 'hr_staff', 'employee']}>
+                  // HR's view of an employee's payslip, opened from Payroll.
+                  // Employees used to be let in here to read their own, which
+                  // put them inside Human Resources -- the shell follows the
+                  // address. Their own payslip has its own address in My
+                  // Workspace now (my-payroll/:recordId/payslip).
+                  <ProtectedRoute allowedRoles={['admin', 'hr_manager', 'hr_staff']}>
                     <PayslipPrintPage />
                   </ProtectedRoute>
                 }
@@ -613,6 +614,20 @@ export default function App() {
                 element={
                   <ProtectedRoute requireEmployee>
                     <MyPayrollPage />
+                  </ProtectedRoute>
+                }
+              />
+              {/* Your own payslip, without leaving My Workspace -- on a refresh
+                  or a pasted link too, since the shell is chosen from the
+                  address. Gated on employment like the rest of self-service, so
+                  an Accountant or an HR Manager opens theirs here as well. The
+                  page asks for the signed-in person's own released record, and
+                  RLS refuses anyone else's for everyone but HR. */}
+              <Route
+                path="my-payroll/:recordId/payslip"
+                element={
+                  <ProtectedRoute requireEmployee>
+                    <MyPayslipPage />
                   </ProtectedRoute>
                 }
               />

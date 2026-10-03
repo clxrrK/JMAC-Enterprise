@@ -15,6 +15,7 @@ export const EMPLOYEE_PORTAL_QUERY_KEYS: string[][] = [
   ['my-attendance-month-summary'],
   ['my-attendance-records'],
   ['my-payroll-records'],
+  ['my-payroll-record'],
   ['my-leave-requests'],
   ['my-leave-balances'],
   ['my-activity'],
