@@ -151,7 +151,7 @@ export function disbursementActionsFor(
  * copy, and that the place to change one is not here.
  */
 export const SNAPSHOT_NOTE =
-  'These figures are a snapshot of what HR finalized for this period. Finance ' +
+  'These figures are a snapshot of what HR released for this period. Finance ' +
   'does not calculate payroll and cannot change it here — a correction has to ' +
   'be made in HR, and would arrive as a new payable.'
 

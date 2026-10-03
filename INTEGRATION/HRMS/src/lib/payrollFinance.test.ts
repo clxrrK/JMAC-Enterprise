@@ -45,7 +45,7 @@ function disbursement(over: Partial<PayrollDisbursement> = {}): PayrollDisbursem
 
 describe('what the page says about the boundary', () => {
   it('says the figures are HR’s and cannot be changed here', () => {
-    expect(SNAPSHOT_NOTE).toMatch(/snapshot of what HR finalized/i)
+    expect(SNAPSHOT_NOTE).toMatch(/snapshot of what HR released/i)
     expect(SNAPSHOT_NOTE).toMatch(/Finance does not calculate payroll/i)
     expect(SNAPSHOT_NOTE).toMatch(/corrected in HR|made in HR/i)
   })

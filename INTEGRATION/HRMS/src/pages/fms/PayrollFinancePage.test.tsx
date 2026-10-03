@@ -107,7 +107,8 @@ describe('nothing released yet', () => {
     render(<PayrollFinancePage />)
     expect(screen.getByText('No payroll to disburse')).toBeTruthy()
     expect(screen.getByText(/as soon as HR releases a payroll period/)).toBeTruthy()
-    expect(screen.queryByText(/finalizes/)).toBeNull()
+    // Anywhere on the page -- the header and the note under the cards too.
+    expect(screen.queryByText(/finaliz/i)).toBeNull()
   })
 })
 
