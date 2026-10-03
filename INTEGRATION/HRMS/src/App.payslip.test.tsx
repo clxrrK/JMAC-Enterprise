@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { policiesOn, type Policy } from '@/test/policies'
 import { hiddenInPrint, printRules, removedInPrint } from '@/test/printRules'
 
 /**
@@ -18,7 +19,9 @@ import { hiddenInPrint, printRules, removedInPrint } from '@/test/printRules'
  * browser history swapped for an in-memory one, so a test can open an address
  * the way a refresh or a pasted link does, and follow the clicks a person
  * makes. What is stood in for is the data layer, which applies production's
- * RLS rule for payroll records, and the pages these tests only arrive at.
+ * RLS rule for payroll records -- and for a payslip's lines, the rule the
+ * migrations that ship actually grant -- and the pages these tests only arrive
+ * at.
  */
 
 const harness = vi.hoisted(() => ({
@@ -35,9 +38,17 @@ const harness = vi.hoisted(() => ({
   /** Every query the app made, with the filters it asked for. */
   queries: [] as { table: string; filters: Record<string, unknown> }[],
   clients: [] as { clear(): void }[],
+  /** Whether the migrations that ship let an employee read the lines of their
+   *  own released payroll. Set from supabase/migrations, below. */
+  employeesReadOwnLines: false,
 }))
 
 type Row = Record<string, unknown> & { id: string; employee_id: string; status: string }
+type Line = { id: string; payroll_record_id: string; item_type: string; label: string; amount: number; created_at: string }
+
+const GROSS = 40000
+const AT = '2026-10-03T12:30:00Z'
+const toCentavos = (amount: number) => Math.round(amount * 100) / 100
 
 function payrollRecord(
   id: string,
@@ -46,15 +57,15 @@ function payrollRecord(
   net: number,
   status = 'released'
 ): Row {
-  const at = '2026-10-03T12:30:00Z'
+  const at = AT
   return {
     id,
     employee_id: employeeId,
     status,
     currency: 'PHP',
-    basic_salary: 40000,
-    gross_salary: 40000,
-    total_deductions: 40000 - net,
+    basic_salary: GROSS,
+    gross_salary: GROSS,
+    total_deductions: toCentavos(GROSS - net),
     net_salary: net,
     days_present: 22,
     absent_days: 0,
@@ -75,12 +86,30 @@ function payrollRecord(
       departments: { name: 'Operations' },
       positions: { title: 'Staff' },
     },
-    payroll_line_items: [],
     payslips:
       status === 'released'
         ? [{ id: `ps-${id}`, payroll_record_id: id, payslip_number: `PS-${id}`, released_at: at, created_at: at }]
         : [],
   }
+}
+
+/** A payslip's deductions, the way payroll generation writes them: the three
+ *  statutory contributions, and absences for the rest of the total. */
+function deductionLines(record: Row): Line[] {
+  const statutory: [string, number][] = [
+    ['SSS Contribution', 1125],
+    ['PhilHealth Contribution', 562.5],
+    ['Pag-IBIG Contribution', 200],
+  ]
+  const absences = toCentavos(Number(record.total_deductions) - statutory.reduce((sum, [, amount]) => sum + amount, 0))
+  return [...statutory, ['Absences', absences] as [string, number]].map(([label, amount], i) => ({
+    id: `${record.id}-line-${i}`,
+    payroll_record_id: record.id,
+    item_type: 'deduction',
+    label,
+    amount,
+    created_at: AT,
+  }))
 }
 
 const RECORDS: Row[] = [
@@ -92,8 +121,29 @@ const RECORDS: Row[] = [
   payrollRecord('rec-hrs', 'e-hrs', ['Hayden', 'Staff'], 25000),
   payrollRecord('rec-acct', 'e-acct', ['Avery', 'Accountant'], 28000),
   // Somebody else's, with a name and a figure that appear nowhere else.
-  payrollRecord('rec-colleague', 'e-colleague', ['Colleague', 'Bravo'], 99999.99),
+  payrollRecord('rec-colleague', 'e-colleague', ['Colleague', 'Bravo'], 31234.56),
 ]
+
+const LINES: Line[] = RECORDS.flatMap(deductionLines)
+
+/** The policies payroll_line_items is left with once every migration has run. */
+const MIGRATIONS = resolve(process.cwd(), 'supabase/migrations')
+const lineItemPolicies = policiesOn(
+  'payroll_line_items',
+  readdirSync(MIGRATIONS)
+    .filter((file) => file.endsWith('.sql'))
+    .map((name) => ({ name, sql: readFileSync(join(MIGRATIONS, name), 'utf8') }))
+)
+
+/** The rule an employee's read of their payslip's lines needs: an active
+ *  employee, a payroll record that is theirs, and released. */
+const grantsOwnReleasedLines = (policy: Policy) =>
+  policy.command === 'select' &&
+  /\bis_active_employee\(\)/.test(policy.definition) &&
+  /\bemployee_id\s*=\s*(public\.)?my_employee_id\(\)/.test(policy.definition) &&
+  /\bstatus\s*=\s*'released'/.test(policy.definition)
+
+harness.employeesReadOwnLines = [...lineItemPolicies.values()].some(grantsOwnReleasedLines)
 
 interface Person {
   profile: Record<string, unknown>
@@ -174,7 +224,7 @@ vi.mock('@/contexts/AuthContext', () => ({
 }))
 
 interface FakeQuery {
-  select(): FakeQuery
+  select(columns?: string): FakeQuery
   eq(column: string, value: unknown): FakeQuery
   /** The one list read here (My Payroll's) ends in order(), so that is what
    *  returns the rows. */
@@ -186,21 +236,35 @@ interface FakeQuery {
 vi.mock('@/lib/supabase', () => {
   const HR = ['admin', 'hr_manager', 'hr_staff']
   function from(table: string): FakeQuery {
+    let columns = ''
     const filters: Record<string, unknown> = {}
     const rows = () => {
       harness.queries.push({ table, filters: { ...filters } })
       if (table !== 'payroll_records') return []
       const me = harness.profile ?? {}
+      const hr = HR.includes(String(me.role))
       // Production's RLS on payroll_records: HR reads every record
       // (payroll_records_staff_select); anyone else, only their own released
       // ones (payroll_records_self_select).
-      const visible = HR.includes(String(me.role))
-        ? RECORDS
-        : RECORDS.filter((r) => r.employee_id === me.employee_id && r.status === 'released')
-      return visible.filter((r) => Object.entries(filters).every(([column, value]) => r[column] === value))
+      const visible = hr ? RECORDS : RECORDS.filter((r) => r.employee_id === me.employee_id && r.status === 'released')
+      return visible
+        .filter((r) => Object.entries(filters).every(([column, value]) => r[column] === value))
+        .map((r) => {
+          // An embedded resource is there only when the query asks for it, and
+          // it holds only the lines RLS lets this person read: HR all of them
+          // (payroll_line_items_staff_select), anyone else what the migrations
+          // grant -- see employeesReadOwnLines.
+          if (!columns.includes('payroll_line_items')) return r
+          const readable =
+            hr || (harness.employeesReadOwnLines && r.employee_id === me.employee_id && r.status === 'released')
+          return { ...r, payroll_line_items: readable ? LINES.filter((line) => line.payroll_record_id === r.id) : [] }
+        })
     }
     const query: FakeQuery = {
-      select: () => query,
+      select: (wanted = '') => {
+        columns = wanted
+        return query
+      },
       eq: (column, value) => {
         filters[column] = value
         return query
@@ -325,7 +389,7 @@ describe("somebody else's payslip", () => {
   it('is not shown to an employee who puts its id in a My Workspace address', async () => {
     open('/dashboard/my-payroll/rec-colleague/payslip', PEOPLE.cashier)
     expect(await screen.findByText('Payslip not available')).toBeTruthy()
-    expect(document.body.textContent).not.toMatch(/Colleague|Bravo|99,999\.99/)
+    expect(document.body.textContent).not.toMatch(/Colleague|Bravo|31,234\.56/)
     expectMyWorkspace()
   })
 
@@ -334,7 +398,7 @@ describe("somebody else's payslip", () => {
     // about the person signed in, so its query asks for theirs and nothing else.
     open('/dashboard/my-payroll/rec-colleague/payslip', PEOPLE.hrManager)
     expect(await screen.findByText('Payslip not available')).toBeTruthy()
-    expect(document.body.textContent).not.toMatch(/Colleague|Bravo|99,999\.99/)
+    expect(document.body.textContent).not.toMatch(/Colleague|Bravo|31,234\.56/)
     expect(harness.queries).toContainEqual({
       table: 'payroll_records',
       filters: { id: 'rec-colleague', employee_id: 'e-hrm', status: 'released' },
@@ -346,7 +410,7 @@ describe("somebody else's payslip", () => {
     open('/dashboard/payroll/rec-colleague/payslip', PEOPLE.employee)
     expect(await screen.findByText('Employee dashboard page')).toBeTruthy()
     expect(harness.path).toBe('/dashboard/my-dashboard')
-    expect(document.body.textContent).not.toMatch(/Payslip|Colleague|99,999\.99/)
+    expect(document.body.textContent).not.toMatch(/Payslip|Colleague|31,234\.56/)
     expect(screen.queryByText('Human Resources')).toBeNull()
   })
 })
@@ -365,6 +429,57 @@ describe('a payslip opened from HR Payroll', () => {
     expect(await screen.findByText('HR Payroll page')).toBeTruthy()
     expect(harness.path).toBe('/dashboard/payroll')
     expect(within(sidebar()).getByText('Human Resources')).toBeTruthy()
+  })
+})
+
+/**
+ * The breakdown under Total Deductions.
+ *
+ * Production had no policy letting an employee read payroll_line_items, so
+ * every payslip outside HR said "No deductions" directly above a nonzero Total
+ * Deductions: the total comes from payroll_records, the lines from a table the
+ * employee could not read. The fake data layer above grants employees their
+ * lines only if a policy in supabase/migrations does, so these fail if that
+ * policy is ever dropped or loosened out of shape -- or if the payslip stops
+ * asking for its lines.
+ */
+describe("the deductions on an employee's own payslip", () => {
+  /** "-₱19,545.45" → 1954545 */
+  const centavos = (shown: string) => Math.round(Number(shown.replace(/[^0-9.]/g, '')) * 100)
+
+  it('are readable by an active employee for their own released payroll, per the migrations', () => {
+    const own = lineItemPolicies.get('payroll_line_items_self_select')
+    expect(own, 'no payroll_line_items_self_select once every migration has run').toBeDefined()
+    expect(grantsOwnReleasedLines(own!), own!.definition).toBe(true)
+  })
+
+  it.each<[string, Person, string]>([
+    ['a cashier', PEOPLE.cashier, 'rec-cashier'],
+    ['an Accountant', PEOPLE.accountant, 'rec-acct'],
+  ])('are listed for %s, and add up to Total Deductions', async (_who, who, recordId) => {
+    open(`/dashboard/my-payroll/${recordId}/payslip`, who)
+    const totalLabel = await screen.findByText('Total Deductions')
+    const shownTotal = totalLabel.nextElementSibling!.textContent!
+    const section = totalLabel.closest('section')!
+    const lines = [...section.querySelectorAll(':scope > div')]
+      .filter((row) => !row.contains(totalLabel))
+      .map((row) => ({ label: row.firstElementChild!.textContent, amount: centavos(row.lastElementChild!.textContent!) }))
+
+    expect(centavos(shownTotal)).toBeGreaterThan(0)
+    expect(
+      lines.length,
+      `Total Deductions is ${shownTotal} but no deduction line reached the payslip -- ` +
+        "the employee's read of their own released lines is blocked (payroll_line_items_self_select)"
+    ).toBeGreaterThan(0)
+    expect(within(section).queryByText('No deductions')).toBeNull()
+    expect(lines.map((line) => line.label)).toEqual([
+      'SSS Contribution',
+      'PhilHealth Contribution',
+      'Pag-IBIG Contribution',
+      'Absences',
+    ])
+    // The breakdown explains the total; it does not change it.
+    expect(lines.reduce((sum, line) => sum + line.amount, 0)).toBe(centavos(shownTotal))
   })
 })
 
