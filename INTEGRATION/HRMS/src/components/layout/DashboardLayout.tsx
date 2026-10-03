@@ -7,9 +7,12 @@ export function DashboardLayout() {
   const location = useLocation()
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-background print:h-auto print:overflow-visible">
+    // print:block on both flex wrappers: with flex nested in flex, Chrome cut
+    // printed text lines in half at the page edges. Sidebar and navbar are
+    // print:hidden, so as blocks the page prints exactly as before.
+    <div className="flex h-dvh overflow-hidden bg-background print:block print:h-auto print:overflow-visible">
       <Sidebar />
-      <div className="flex flex-1 flex-col overflow-hidden print:overflow-visible">
+      <div className="flex flex-1 flex-col overflow-hidden print:block print:overflow-visible">
         {/* No page title here — every page renders its own heading, and the
           * sidebar already marks where you are. */}
         <Navbar />

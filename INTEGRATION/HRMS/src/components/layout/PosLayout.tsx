@@ -10,9 +10,11 @@ export function PosLayout() {
   const location = useLocation()
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-background print:h-auto print:overflow-visible">
+    // print:block on both flex wrappers, as in DashboardLayout: nested flex
+    // made Chrome cut printed text lines in half at the page edges.
+    <div className="flex h-dvh overflow-hidden bg-background print:block print:h-auto print:overflow-visible">
       <PosSidebar />
-      <div className="flex flex-1 flex-col overflow-hidden print:overflow-visible">
+      <div className="flex flex-1 flex-col overflow-hidden print:block print:overflow-visible">
         <Navbar />
         <main className="flex-1 overflow-y-auto p-6 print:overflow-visible print:p-0">
           <motion.div

@@ -64,7 +64,9 @@ export default function ContractPrintPage() {
         </Button>
       </div>
 
-      <article className="flex flex-col gap-8 rounded-xl border border-border bg-card p-10 shadow-sm print:rounded-none print:border-0 print:shadow-none">
+      {/* contract-document: printed on A4 portrait (the @page rule in index.css),
+        * whose margins replace the card's padding so every sheet matches. */}
+      <article className="contract-document flex flex-col gap-8 rounded-xl border border-border bg-card p-10 shadow-sm print:rounded-none print:border-0 print:p-0 print:shadow-none">
         <header className="flex flex-col items-center gap-1 border-b border-border pb-6 text-center">
           <h1 className="font-display text-2xl font-bold text-foreground">{companyName}</h1>
           <p className="text-sm font-medium uppercase tracking-widest text-foreground">Contract of Employment</p>
@@ -91,7 +93,7 @@ export default function ContractPrintPage() {
           </p>
         </section>
 
-        <section className="grid grid-cols-2 gap-4 text-sm">
+        <section className="grid grid-cols-2 gap-4 text-sm print:break-inside-avoid">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Employee Name</p>
             <p className="text-foreground">
@@ -112,7 +114,7 @@ export default function ContractPrintPage() {
           </div>
         </section>
 
-        <section className="grid grid-cols-2 gap-4 text-sm">
+        <section className="grid grid-cols-2 gap-4 text-sm print:break-inside-avoid">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Position</p>
             <p className="text-foreground">{jobPosting?.positions?.title ?? '—'}</p>
@@ -144,7 +146,7 @@ export default function ContractPrintPage() {
         </section>
 
         {offer.additional_compensation && (
-          <section className="flex flex-col gap-2 text-sm">
+          <section className="flex flex-col gap-2 text-sm print:break-inside-avoid">
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Additional Compensation</p>
             <p className="whitespace-pre-line text-foreground">{offer.additional_compensation}</p>
           </section>
@@ -154,7 +156,7 @@ export default function ContractPrintPage() {
           * when printed, so the contract reads as a real multi-page document. */}
         {contract.terms && (
           <section className="flex flex-col gap-3 text-sm print:break-before-page">
-            <h2 className="font-display text-lg font-bold text-foreground">Terms &amp; Conditions of Employment</h2>
+            <h2 className="font-display text-lg font-bold text-foreground print:break-after-avoid">Terms &amp; Conditions of Employment</h2>
             <p className="whitespace-pre-line leading-relaxed text-foreground">{contract.terms}</p>
           </section>
         )}
@@ -162,19 +164,19 @@ export default function ContractPrintPage() {
         {/* Page 3 — annexed company policies. */}
         {contract.company_policies && (
           <section className="flex flex-col gap-3 text-sm print:break-before-page">
-            <h2 className="font-display text-lg font-bold text-foreground">Annex A — Company Policies</h2>
+            <h2 className="font-display text-lg font-bold text-foreground print:break-after-avoid">Annex A — Company Policies</h2>
             <p className="whitespace-pre-line leading-relaxed text-foreground">{contract.company_policies}</p>
           </section>
         )}
 
         {contract.additional_notes && (
           <section className="flex flex-col gap-2 text-sm">
-            <h2 className="font-display text-base font-bold text-foreground">Additional Provisions</h2>
+            <h2 className="font-display text-base font-bold text-foreground print:break-after-avoid">Additional Provisions</h2>
             <p className="whitespace-pre-line leading-relaxed text-foreground">{contract.additional_notes}</p>
           </section>
         )}
 
-        <section className="flex flex-col gap-3 border-t border-border pt-6 text-sm">
+        <section className="flex flex-col gap-3 border-t border-border pt-6 text-sm print:break-inside-avoid">
           <h2 className="font-display text-base font-bold text-foreground">Acknowledgement</h2>
           <p className="leading-relaxed text-foreground">
             The Employee acknowledges having read and understood this Contract in its entirety, including the Company
@@ -187,7 +189,9 @@ export default function ContractPrintPage() {
           </p>
         </section>
 
-        <section className="mt-8 grid grid-cols-2 gap-10 text-sm">
+        {/* Never a page break between "IN WITNESS WHEREOF" and the signature
+          * lines: a signature page with no text above it is no contract page. */}
+        <section className="mt-8 grid grid-cols-2 gap-10 text-sm print:break-before-avoid print:break-inside-avoid">
           <div className="flex flex-col gap-8">
             <div className="border-b border-foreground/40 pb-1" />
             <div>
@@ -210,7 +214,7 @@ export default function ContractPrintPage() {
           </div>
         </section>
 
-        <footer className="border-t border-border pt-4 text-center text-[10px] text-muted-foreground">
+        <footer className="border-t border-border pt-4 text-center text-[10px] text-muted-foreground print:break-inside-avoid">
           <p>
             {companyName} · Contract Reference {application.reference_code} · This document is system-generated by
             JMAC Enterprise.

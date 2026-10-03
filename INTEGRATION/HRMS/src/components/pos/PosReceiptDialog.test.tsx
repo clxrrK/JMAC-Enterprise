@@ -7,6 +7,7 @@ import type { Branch } from '@/hooks/useBranches'
 import type { CatalogueRow } from '@/hooks/usePosCatalogue'
 import type { Receipt } from '@/hooks/usePosTill'
 import type { TransactionRow } from '@/lib/posTransactions'
+import { hiddenInPrint, printRules, removedInPrint, rulesFor } from '@/test/printRules'
 
 /**
  * One receipt, two doors.
@@ -132,7 +133,7 @@ const { PosTransactionsView } = await import('@/components/pos/PosTransactionsVi
 
 /** Ring up a cash sale and land on the receipt. */
 function sellForCash(tendered = '200') {
-  render(
+  const view = render(
     <MemoryRouter>
       <PosTillPage />
     </MemoryRouter>
@@ -141,6 +142,7 @@ function sellForCash(tendered = '200') {
   fireEvent.click(screen.getByRole('button', { name: 'Add Coca-Cola 1.5L' }))
   fireEvent.change(screen.getByLabelText('Cash received'), { target: { value: tendered } })
   fireEvent.click(screen.getByRole('button', { name: /Take payment/ }))
+  return view
 }
 
 /** Open the same sale the way a cashier would tomorrow. */
@@ -344,12 +346,75 @@ describe('printing', () => {
     }
   })
 
-  // The stylesheet is what excludes the sidebar, the header and the modal
-  // frame. Subtractive on purpose: hide everything, then un-hide the receipt,
-  // so a control added to the dialog later is excluded by default.
-  it('hides the page and un-hides only the receipt', () => {
-    expect(printCss).toMatch(/body\s*\*\s*\{[^}]*visibility:\s*hidden/)
-    expect(printCss).toMatch(/#printable-receipt[\s\S]{0,80}visibility:\s*visible/)
+  /**
+   * What the print stylesheet selects, applied to the real rendered DOM.
+   *
+   * The rule this replaced -- `body * { visibility: hidden }`, with the
+   * receipt un-hidden beneath it -- was asserted here as correct. It printed
+   * every page without a receipt blank (the contract test covers that side),
+   * and it positioned the receipt absolutely inside the dialog's scroll box,
+   * which collapsed in print to its title row and clipped the receipt to one
+   * line. These assert the outcome in terms jsdom can actually check: which
+   * elements the real rules take out of the printout, and which they leave.
+   */
+  const rules = printRules(readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8'))
+
+  for (const [door, open] of [
+    ['the till', () => sellForCash()],
+    ['history', () => reprintFromHistory()],
+  ] as const) {
+    it(`prints the receipt and only the receipt, from ${door}`, () => {
+      open()
+      const receipt = document.querySelector('#printable-receipt')!
+
+      // The receipt and every box around it stay in the printout.
+      for (let el: Element | null = receipt; el && el !== document.body; el = el.parentElement) {
+        expect(removedInPrint(rules, el), `${el.tagName} around the receipt is removed`).toBe(false)
+        expect(hiddenInPrint(rules, el), `${el.tagName} around the receipt is hidden`).toBe(false)
+      }
+      for (const el of receipt.querySelectorAll('*')) {
+        expect(removedInPrint(rules, el)).toBe(false)
+      }
+
+      // Everything else in <body> -- the page behind the dialog, the overlay --
+      // is out of layout, so it prints nothing and adds no blank pages.
+      for (const branch of document.body.children) {
+        if (branch.contains(receipt) || branch.tagName === 'SCRIPT') continue
+        expect(removedInPrint(rules, branch), `<${branch.tagName.toLowerCase()}> beside the dialog prints`).toBe(true)
+      }
+
+      // Inside the dialog, everything but the receipt: title, Close, Print, ×.
+      const dialog = receipt.closest('[role="dialog"]')!
+      for (const child of dialog.children) {
+        if (child === receipt) continue
+        expect(removedInPrint(rules, child), `dialog part "${child.textContent}" prints`).toBe(true)
+      }
+    })
+  }
+
+  it('renders the receipt outside the page, so removing the page cannot take it too', () => {
+    // The page is removed from print with display: none, which nothing inside
+    // could undo. That is only safe because the dialog portals to <body>.
+    // `container` is where the till page itself is mounted.
+    const { container } = sellForCash()
+    const receipt = document.querySelector('#printable-receipt')!
+    expect(container.contains(receipt)).toBe(false)
+    expect(removedInPrint(rules, container)).toBe(true)
+    expect(receipt.closest('[role="dialog"]')?.parentElement?.parentElement).toBe(document.body)
+  })
+
+  it('lets the receipt flow on the page instead of clipping it inside the dialog', () => {
+    sellForCash()
+    const receipt = document.querySelector('#printable-receipt')!
+    const dialog = receipt.closest('[role="dialog"]')!
+    const onDialog = Object.assign({}, ...rulesFor(rules, dialog).map((rule) => rule.declarations))
+    // The dialog's box is a scroll box on screen; in print it must not be one.
+    expect(onDialog).toMatchObject({ position: 'static', overflow: 'visible', 'max-height': 'none' })
+    // And the receipt is not lifted out of flow into a fixed-height box again.
+    const onReceipt = Object.assign({}, ...rulesFor(rules, receipt).map((rule) => rule.declarations))
+    expect(onReceipt.position).not.toBe('absolute')
+    // Its existing 80mm thermal width, flowing at 100% on narrower paper.
+    expect(onReceipt).toMatchObject({ width: '100%', 'max-width': '80mm' })
   })
 
   it('prints dark on white rather than relying on background colours', () => {

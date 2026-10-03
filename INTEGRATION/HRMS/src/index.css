@@ -220,39 +220,69 @@
 }
 
 /* ===========================================================================
-   Printing a receipt
+   Printing
    ===========================================================================
-   The receipt dialog carries #printable-receipt, and both the till and the
-   register render it -- one target, so Print produces the same document from
-   either. The id had existed for a while with nothing selecting it, so Print
-   emitted the whole page: the modal, the dialog's own buttons, and whatever
-   the cashier had been looking at behind it.
+   Two kinds of printout, and neither may leak into the other.
 
-   The approach is subtractive rather than a second component. Hide everything,
-   then un-hide the chain from <body> down to the receipt and everything
-   inside it. That keeps ONE receipt in the markup -- there is no print-only
-   copy to drift from the screen one -- and anything added to the dialog later
-   is excluded by default rather than accidentally printed.
+   A DOCUMENT -- the employment contract, a payslip, a report -- prints the
+   page it is on. App chrome carries print:hidden (sidebar, navbar, buttons)
+   and the dashboard shells drop their scroll and height limits in print.
+   Nothing in this file hides anything else on such a page.
 
-   `visibility` rather than `display`, because collapsing ancestors would take
-   the receipt down with them. */
+   A RECEIPT prints alone. It is selected only while a receipt is actually
+   open: everything in <body> that does not contain #printable-receipt is
+   taken out of layout, then everything in the dialog except the receipt. One
+   receipt in the markup -- no print-only copy to drift from the screen one --
+   and anything added to the dialog later is excluded by default.
+
+   This replaced `body * { visibility: hidden }` with the receipt un-hidden
+   beneath it, which broke both kinds:
+
+   - It applied to every print, not only receipts. A page with no receipt had
+     nothing to un-hide, so the contract printed as five laid-out, invisible
+     pages: Chrome counted them and drew none of them.
+   - It lifted the receipt out of flow (position: absolute) inside the
+     dialog's scroll box (overflow-y: auto). With the dialog's padding zeroed
+     and its footer hidden, that box shrank to its title row in print, and the
+     receipt showed through a one-line slot.
+
+   `display` rather than `visibility`, so what is not printed takes no space --
+   a receipt reprinted over a long transaction history no longer trails blank
+   pages -- and only ever on branches that do not hold the receipt, so the
+   receipt never sits under a display: none ancestor. */
 @media print {
-  body * {
-    visibility: hidden;
+  body:has(#printable-receipt) > :not(:has(#printable-receipt)) {
+    display: none;
   }
 
-  #printable-receipt,
-  #printable-receipt * {
-    visibility: visible;
+  /* The dialog becomes plain flow at the top of the page: no fixed centring,
+     no scroll box to clip it, no card frame. */
+  body:has(#printable-receipt) > :has(#printable-receipt),
+  [role='dialog']:has(#printable-receipt) {
+    position: static;
+    display: block;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
   }
 
-  /* Lifted out of the dialog and onto the page. Without this the receipt
-     prints wherever the centred modal happened to sit, which on A4 is a
-     third of the way down with the rest of the sheet blank. */
+  /* The dialog's title, buttons and close icon are not part of the receipt. */
+  [role='dialog']:has(#printable-receipt) > :not(#printable-receipt) {
+    display: none;
+  }
+
   #printable-receipt {
-    position: absolute;
-    left: 0;
-    top: 0;
+    page: receipt;
+    /* The receipt's established thermal width -- there is no configurable
+       printer width to read. 100% lets a narrower printable area (a 72mm
+       head on 80mm paper) take it without clipping. */
     width: 100%;
     max-width: 80mm;
     margin: 0;
@@ -272,16 +302,22 @@
     box-shadow: none !important;
   }
 
-  /* The dialog's own frame is not part of the receipt. */
-  [data-slot='dialog-overlay'],
-  [role='dialog'] {
-    background: transparent !important;
-    border: 0 !important;
-    box-shadow: none !important;
-    padding: 0 !important;
+  /* The contract is an A4 document; its own page rule below. */
+  .contract-document {
+    page: contract;
   }
 
   @page {
     margin: 8mm;
+  }
+
+  /* Thermal paper: as little margin as the printer allows. */
+  @page receipt {
+    margin: 4mm;
+  }
+
+  @page contract {
+    size: A4 portrait;
+    margin: 18mm 16mm;
   }
 }
