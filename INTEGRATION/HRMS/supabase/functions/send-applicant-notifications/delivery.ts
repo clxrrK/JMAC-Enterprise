@@ -441,8 +441,11 @@ export async function checkProvider(deps: CheckDeps): Promise<HealthReport> {
 
   if (deps.messageId) {
     try {
+      // days=90 is the furthest back Brevo searches. Without it Brevo looks at
+      // the last 30 days only, and an older message reads as having no events
+      // at all -- indistinguishable from one that was never delivered.
       const res = await deps.provider.get(
-        `/smtp/statistics/events?messageId=${encodeURIComponent(deps.messageId)}&limit=50`
+        `/smtp/statistics/events?messageId=${encodeURIComponent(deps.messageId)}&days=90&limit=50`
       )
       if (res.ok) {
         const events = parse(res.body)?.events

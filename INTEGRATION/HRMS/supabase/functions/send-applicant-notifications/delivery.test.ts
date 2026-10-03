@@ -593,6 +593,28 @@ describe('the health check', () => {
     })
     expect(report.message_events).toEqual([{ event: 'delivered', date: '2026-10-03T08:01:00Z', reason: null }])
   })
+
+  it('looks back as far as Brevo allows, not just its default month', async () => {
+    // Without a range Brevo searches the last 30 days only. Production's
+    // September messages, checked 32 days later, came back with no events at
+    // all -- which reads as "never delivered" when it means "not looked for".
+    const paths: string[] = []
+    await checkProvider({
+      counts,
+      provider: {
+        async send() { throw new Error('the health check must not send') },
+        async get(path: string) {
+          paths.push(path)
+          return { ok: true, status: 200, body: path.startsWith('/smtp') ? '{"events":[]}' : '{}' }
+        },
+      },
+      senderEmail: 'careers@jmac.test',
+      messageId: '<m-1@smtp-relay.brevo.com>',
+    })
+    const lookup = paths.find((p) => p.startsWith('/smtp/statistics/events'))!
+    expect(lookup).toContain('messageId=%3Cm-1%40smtp-relay.brevo.com%3E')
+    expect(lookup).toContain('days=90')
+  })
 })
 
 // ------------------------------------------------------- the HTTP client
