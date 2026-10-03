@@ -91,15 +91,22 @@ read-only: it processes the queue first, and can send mail.
 supabase migration list --linked
 ```
 
-Only `20261007000000_applicant_notification_recovery` should be pending. If
-anything else is, stop — `db push` applies every pending migration. Then:
+**Do not `db push` while anything else is listed as pending.** On 2026-10-03
+production's migration history was missing `20261001000000` through
+`20261006000000` although every one of them was already applied — their
+tables and functions exist — so a push would try to run all seven again.
+Until someone checks each of those against production and records it with
+`supabase migration repair --status applied <version> --linked`, apply this
+one on its own, as a single transaction:
 
 ```
-supabase db push --linked
+# wrap the file in begin; ... commit; and run it
+supabase db query --linked -f <wrapped copy of 20261007000000_applicant_notification_recovery.sql>
 ```
 
-It adds one log table and three operator functions. It sends nothing and
-changes no existing row.
+It is idempotent, adds one log table and three operator functions, sends
+nothing and changes no existing row. (Applied this way on 2026-10-03; not
+recorded in the history either.)
 
 ### 5. Change the Brevo setting
 

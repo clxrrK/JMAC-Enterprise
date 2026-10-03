@@ -58,7 +58,12 @@ ctx as (
             where later.event_type in ('interview_rescheduled', 'interview_cancelled')
               and split_part(later.dedupe_key, '@', 1) = split_part(p.dedupe_key, '@', 1)
               and later.created_at > p.created_at
-        ) as interview_changed_since
+        ) as interview_changed_since,
+        -- "You passed your initial interview" promises a final one is coming.
+        exists (
+            select 1 from public.interviews f
+            where f.application_id = p.application_id and f.interview_type = 'final'
+        ) as final_interview_arranged
     from parked p
     join public.applications a on a.id = p.application_id
     left join public.interviews i
@@ -110,6 +115,14 @@ judged as (
 
             when event_type = 'initial_interview_passed' and interview_status is distinct from 'passed' then
                 'withhold|The interview is no longer recorded as passed.'
+            -- The email says the final interview is still to be scheduled.
+            -- Once the application is past the interviews, or a final one
+            -- exists, that is no longer true.
+            when event_type = 'initial_interview_passed'
+                 and application_status in ('offered', 'hired', 'deployed') then
+                'withhold|The application is past the interviews (now ' || application_status || '); "your final interview will be scheduled" is no longer true.'
+            when event_type = 'initial_interview_passed' and final_interview_arranged then
+                'withhold|A final interview has since been arranged.'
             when event_type = 'initial_interview_passed' and later_notice_delivered then
                 'withhold|Overtaken by a later notice that was delivered.'
             when event_type = 'initial_interview_passed' then
