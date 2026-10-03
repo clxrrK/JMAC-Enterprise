@@ -127,10 +127,18 @@ export default function PayrollPage() {
 
   const pendingCount = records?.filter((r) => r.status === 'pending_approval').length ?? 0
   const rejectedCount = records?.filter((r) => r.status === 'rejected').length ?? 0
+  const approvedCount = records?.filter((r) => r.status === 'approved' || r.status === 'released').length ?? 0
+  const recordCount = records?.length ?? 0
 
   // Whose turn it is, in the words of whoever is reading it. The period status
   // is an aggregate of its records (see recompute_payroll_period_status), so
   // this is the one place that translates it into a next action.
+  //
+  // It also has to say when Finance gets the payroll, because nothing else on
+  // the page does. Approving is per employee and is not the handoff: Finance
+  // receives the payroll only when the HR Manager releases a fully approved
+  // period. A manager who approved one of eight and saw nothing reach Finance
+  // had no way to tell from here that seven decisions and a release remained.
   const workflowCopy = React.useMemo(() => {
     switch (selectedPeriod?.status) {
       case 'generated':
@@ -142,10 +150,10 @@ export default function PayrollPage() {
         }
       case 'pending_approval':
         return {
-          title: 'Step 3 — Waiting on approval',
+          title: `Step 3 — Waiting on approval · ${approvedCount} of ${recordCount} employees approved`,
           detail: canApprove
-            ? 'Approve or reject each employee individually from the row menu below.'
-            : 'The HR Manager is reviewing these one employee at a time.',
+            ? 'Approve or reject each employee individually from the row menu below. Finance receives this payroll only after every employee is approved and you release it.'
+            : 'The HR Manager is reviewing these one employee at a time. Finance receives the payroll once every employee is approved and the HR Manager releases it.',
         }
       case 'rejected':
         return {
@@ -157,17 +165,18 @@ export default function PayrollPage() {
       case 'approved':
         return {
           title: 'Step 4 — Approved, ready to release',
-          detail: 'Releasing generates payslips and makes them visible to employees.',
+          detail:
+            'Releasing issues every payslip and hands the payroll to Finance for payment, in one step. Until then Finance has nothing to pay.',
         }
       case 'released':
         return {
           title: 'Complete — payslips released',
-          detail: 'Employees can now see their payslip and net salary in My Payroll.',
+          detail: 'Employees can now see their payslip and net salary in My Payroll, and Finance has the payroll to disburse.',
         }
       default:
         return { title: 'Payroll not generated yet', detail: 'Generate payroll to compute this period.' }
     }
-  }, [selectedPeriod?.status, canApprove, canPrepare, rejectedCount])
+  }, [selectedPeriod?.status, canApprove, canPrepare, rejectedCount, approvedCount, recordCount])
 
   const rows = React.useMemo(() => {
     if (!records) return []
@@ -551,7 +560,7 @@ export default function PayrollPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Release this payroll?</AlertDialogTitle>
             <AlertDialogDescription>
-              This generates a payslip for every approved employee in this period. Released payroll records become read-only and appear in the employee’s My Payroll.
+              This issues a payslip for every employee in this period and hands the payroll to Finance for payment, in one step. Released payroll records become read-only and appear in each employee’s My Payroll.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

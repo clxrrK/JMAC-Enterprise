@@ -130,9 +130,11 @@ export default function PayrollFinancePage() {
 
   return (
     <div className="space-y-6">
+      {/* "Released", HR's word for the step -- the button HR presses says
+        * Release, and a payroll exists here from that moment and not before. */}
       <PageHeader
         title="Payroll Finance"
-        description="Finalized payroll, ready to be disbursed. HR owns the figures; Finance pays them."
+        description="Released payroll, ready to be disbursed. HR owns the figures; Finance pays them."
       />
 
       {isError && (
@@ -144,11 +146,15 @@ export default function PayrollFinancePage() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-3">
+        {/* isError: a failed load leaves `batches` empty, and these would
+          * otherwise read 0, 0 and ₱0.00 -- indistinguishable from a genuinely
+          * quiet payroll. */}
         <StatCard
           label="Awaiting disbursement"
           value={awaiting.length}
           icon={Wallet}
           isLoading={isLoading}
+          isError={isError}
           index={0}
         />
         <StatCard
@@ -156,6 +162,7 @@ export default function PayrollFinancePage() {
           value={heads}
           icon={Users}
           isLoading={isLoading}
+          isError={isError}
           index={1}
         />
         <StatCard
@@ -163,6 +170,7 @@ export default function PayrollFinancePage() {
           value={formatMoney(owed)}
           icon={Wallet}
           isLoading={isLoading}
+          isError={isError}
           index={2}
         />
       </div>
@@ -172,16 +180,21 @@ export default function PayrollFinancePage() {
         <p className="text-sm text-muted-foreground">{SNAPSHOT_NOTE}</p>
       </div>
 
-      <DataTable
-        columns={columns}
-        data={batches}
-        isLoading={isLoading}
-        searchPlaceholder="Search payroll…"
-        emptyTitle="No payroll to disburse"
-        emptyDescription="A payroll payable appears here as soon as HR finalizes a period."
-        density="compact"
-        onRowClick={(row) => setOpenId(row.id)}
-      />
+      {/* Not rendered when the load failed: its empty state would claim there
+        * is nothing to pay, which a failure does not know. The error above is
+        * the whole answer. */}
+      {!isError && (
+        <DataTable
+          columns={columns}
+          data={batches}
+          isLoading={isLoading}
+          searchPlaceholder="Search payroll…"
+          emptyTitle="No payroll to disburse"
+          emptyDescription="A payroll appears here as soon as HR releases a payroll period — once every employee is approved and the HR Manager releases it."
+          density="compact"
+          onRowClick={(row) => setOpenId(row.id)}
+        />
+      )}
 
       <PayrollBatchDetail
         batch={batches.find((b) => b.id === openId) ?? null}
