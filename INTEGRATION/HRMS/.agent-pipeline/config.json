@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "projectRoot": "..",
+  "maxIterations": 5,
+  "reportTailLines": 500,
+  "requireCleanWorkingTreeBeforeStart": true,
+  "claude": {
+    "command": "claude",
+    "args": [
+      "-p",
+      "--output-format",
+      "text",
+      "--permission-mode",
+      "auto",
+      "Follow the complete JMAC pipeline task provided on stdin. Execute only the authorized scope and end with the required PIPELINE_* contract."
+    ]
+  },
+  "codex": {
+    "command": "codex",
+    "args": ["exec", "--sandbox", "read-only", "-"]
+  },
+  "riskPolicies": {
+    "LOCAL_ONLY": {
+      "claudeMayCommit": false,
+      "claudeMayPush": false,
+      "claudeMayDeploy": false,
+      "productionWrites": false
+    },
+    "COMMIT_ALLOWED": {
+      "claudeMayCommit": true,
+      "claudeMayPush": false,
+      "claudeMayDeploy": false,
+      "productionWrites": false
+    },
+    "DEPLOY_ALLOWED": {
+      "claudeMayCommit": true,
+      "claudeMayPush": true,
+      "claudeMayDeploy": true,
+      "productionWrites": false
+    },
+    "PRODUCTION_WRITE_GATE": {
+      "claudeMayCommit": false,
+      "claudeMayPush": false,
+      "claudeMayDeploy": false,
+      "productionWrites": false
+    }
+  }
+}

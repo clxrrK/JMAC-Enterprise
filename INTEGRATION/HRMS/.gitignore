@@ -20,6 +20,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Agent pipeline runtime
+.agent-pipeline/state.json
+.agent-pipeline/reports/
+.agent-pipeline/logs/
+.agent-pipeline/tasks/claude-task.md
+.agent-pipeline/tasks/codex-task.md
+
 # OS
 .DS_Store
 Thumbs.db

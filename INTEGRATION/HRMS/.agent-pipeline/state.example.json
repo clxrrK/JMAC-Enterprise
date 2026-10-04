@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "status": "idle",
+  "phase": "SETUP",
+  "risk": "LOCAL_ONLY",
+  "iteration": 0,
+  "lastAgent": null,
+  "lastVerdict": null,
+  "lastSeverity": null,
+  "lastSummary": null,
+  "startedAt": null,
+  "updatedAt": null
+}
